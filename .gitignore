@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Data (mounted separately on Kaggle via the Compartment dataset input)
+dataset/*
+# built NCTTI aux + scored rows (committed on purpose)
+!dataset/nctti_en.tsv
+!dataset/nctti_en_scored.tsv
+trial/
+
+# Upstream NCTTI repo clone (ukWaC-derived sentences; do not redistribute).
+# Only the BUILT aux file dataset/nctti_en.tsv is committed; regenerate with
+# tools/build_nctti_aux.py.
+nctti/
+
+# Run artifacts
+output/
+*.pt
+run.log
+
+# OS
+.DS_Store
+Thumbs.db
