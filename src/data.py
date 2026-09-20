@@ -314,12 +314,22 @@ class CompDataset(_DatasetBase):
     """One sentence (tokenized verbatim) per row, for scoring."""
 
     def __init__(self, rows: List[Dict], tokenizer, max_len: int = 256,
-                 is_test: bool = False, proto_stream: bool = False):
+                 is_test: bool = False, proto_stream: bool = False,
+                 target_mask_prob: float = 0.0):
         self.rows = rows
         self.tokenizer = tokenizer
         self.max_len = max_len
         self.is_test = is_test
         self.proto_stream = proto_stream
+        self.target_mask_prob = float(target_mask_prob)
+        self.mask_token_id = getattr(tokenizer, 'mask_token_id', None)
+        if self.mask_token_id is None and hasattr(tokenizer, 'convert_tokens_to_ids'):
+            try:
+                mid = tokenizer.convert_tokens_to_ids('[MASK]')
+                if isinstance(mid, int) and mid > 0:
+                    self.mask_token_id = mid
+            except Exception:
+                pass
         self.items = [self._encode(r) for r in rows]
         self._report()
 
@@ -398,7 +408,27 @@ class CompDataset(_DatasetBase):
         return len(self.items)
 
     def __getitem__(self, idx: int) -> Dict:
-        return self.items[idx]
+        item = self.items[idx]
+        if not self.is_test and self.target_mask_prob > 0.0 and self.mask_token_id is not None:
+            if torch.rand(1).item() < self.target_mask_prob:
+                item = dict(item)
+                new_input_ids = item['input_ids'].clone()
+                t = item.get('target')
+                if t is not None:
+                    t_val = int(t.item()) if hasattr(t, 'item') else int(t)
+                    if t_val == 0:
+                        span = item['mod_span_mask']
+                    elif t_val == 1:
+                        span = item['head_span_mask']
+                    else:
+                        span = item['mod_span_mask'] | item['head_span_mask']
+                else:
+                    span = item['mod_span_mask'] | item['head_span_mask']
+
+                if span.any():
+                    new_input_ids[span] = self.mask_token_id
+                    item['input_ids'] = new_input_ids
+        return item
 
 
 # --------------------------------------------------------------------------- #

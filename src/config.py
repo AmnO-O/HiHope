@@ -107,6 +107,11 @@ class Config:
     # === two-stream prototype representation (lexical vs contextual) ===
     proto_stream: bool = False
     proto_rank_loss: float = 0.0
+    proto_margin: float = 0.2
+    fusion_type: str = 'cross_attention'
+    fusion_layers: int = 2
+    fusion_heads: int = 4
+    target_mask_prob: float = 0.0
 
     # === optimization ===
     batch_size: int = 32
@@ -274,6 +279,16 @@ class Config:
 
         if self.proto_rank_loss < 0:
             errors.append(f'proto_rank_loss must be >= 0, got {self.proto_rank_loss}')
+        if self.proto_margin < 0:
+            errors.append(f'proto_margin must be >= 0, got {self.proto_margin}')
+        if not 0.0 <= self.target_mask_prob <= 1.0:
+            errors.append(f'target_mask_prob must be in [0, 1], got {self.target_mask_prob}')
+        if self.fusion_type not in ('cross_attention', 'linear'):
+            errors.append(f'fusion_type must be "cross_attention" or "linear", got {self.fusion_type!r}')
+        if self.fusion_layers < 1:
+            errors.append(f'fusion_layers must be >= 1, got {self.fusion_layers}')
+        if self.fusion_heads < 1:
+            errors.append(f'fusion_heads must be >= 1, got {self.fusion_heads}')
         if self.proto_stream and self.model_backend not in ('twostream', 'combined'):
             errors.append(f'proto_stream requires model_backend="twostream", got "{self.model_backend}"')
 

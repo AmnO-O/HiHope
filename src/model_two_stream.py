@@ -26,7 +26,7 @@ from transformers import AutoModel
 
 from .constants import SCORE_MAX, SCORE_MIN
 from .heads import GaussHead
-from .prototype_stream import pool_prototype
+from .prototype_stream import SemanticShiftFusion, pool_prototype
 
 
 class TwoStreamBiEncoderModel(nn.Module):
@@ -39,21 +39,32 @@ class TwoStreamBiEncoderModel(nn.Module):
         head_hidden: int = 128,
         dropout: float = 0.1,
         sigma_floor: float = 0.05,
+        fusion_type: str = "cross_attention",
+        fusion_layers: int = 2,
+        fusion_heads: int = 4,
     ):
         super().__init__()
         self.lm = AutoModel.from_pretrained(backbone)
         self.hidden_size = hidden_size
         self.sigma_floor = sigma_floor
+        self.fusion_type = fusion_type
 
-        # Semantic interaction projection:
-        # Concatenates: [h_context (H), h_word (H), Delta_h (H), h_context * h_word (H), cos_sim (1)] = 4H + 1
-        fusion_in_dim = 4 * hidden_size + 1
-        self.fusion = nn.Sequential(
-            nn.Linear(fusion_in_dim, hidden_size),
-            nn.LayerNorm(hidden_size),
-            nn.GELU(),
-            nn.Dropout(dropout),
-        )
+        # Fusion: Cross-Attention Semantic Shift Transformer or Linear projection
+        if fusion_type == "cross_attention":
+            self.fusion = SemanticShiftFusion(
+                hidden_size=hidden_size,
+                num_layers=fusion_layers,
+                num_heads=fusion_heads,
+                dropout=dropout,
+            )
+        else:
+            fusion_in_dim = 4 * hidden_size + 1
+            self.fusion = nn.Sequential(
+                nn.Linear(fusion_in_dim, hidden_size),
+                nn.LayerNorm(hidden_size),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            )
 
         # Single unified GaussHead predicting (mu, sigma)
         self.head = GaussHead(
@@ -143,14 +154,18 @@ class TwoStreamBiEncoderModel(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute interaction signals, fuse representations, and predict (mu, sigma)."""
         diff = h_context - h_word
-        prod = h_context * h_word
         cos_sim = F.cosine_similarity(h_context, h_word, dim=-1, eps=1e-8).unsqueeze(-1)
 
         self.last_cos_sim = cos_sim.squeeze(-1)
         self.last_displacement_norm = torch.norm(diff, p=2, dim=-1)
 
-        combined = torch.cat([h_context, h_word, diff, prod, cos_sim], dim=-1)
-        fused = self.fusion(combined)
+        if isinstance(self.fusion, SemanticShiftFusion):
+            fused = self.fusion(h_context, h_word)
+        else:
+            prod = h_context * h_word
+            combined = torch.cat([h_context, h_word, diff, prod, cos_sim], dim=-1)
+            fused = self.fusion(combined)
+
         mu, sigma = self.head(fused)
         return mu, sigma
 

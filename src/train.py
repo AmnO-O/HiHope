@@ -38,7 +38,8 @@ def track_optimizer_steps(optimizer) -> None:
 
 
 def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, device,
-                grad_clip=1.0, accum_steps=1, report=None, ema=None):
+                grad_clip=1.0, accum_steps=1, report=None, ema=None,
+                proto_rank_loss_weight=0.0, proto_margin=0.2):
     """One scoring epoch with AMP + gradient accumulation + clipping.
 
     Returns the mean supervised loss of the epoch.
@@ -113,6 +114,22 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
             )
 
             loss = mod_loss + head_loss + pv_loss
+
+            # Contrastive Prototype Margin Ranking Loss
+            if proto_rank_loss_weight > 0.0:
+                last_cos = getattr(model, 'last_cos_sim', None)
+                if last_cos is None and hasattr(model, 'fusion') and hasattr(model.fusion, 'last_cos'):
+                    last_cos = model.fusion.last_cos
+                if last_cos is not None:
+                    from .prototype_stream import prototype_rank_loss
+                    if 'target' in batch:
+                        labels = torch.where(batch['target'] == 1, batch['head_avg'], batch['mod_avg'])
+                    else:
+                        labels = batch['mod_avg']
+                    rank_loss = prototype_rank_loss(
+                        last_cos, labels, margin=proto_margin, mask=allowed
+                    )
+                    loss = loss + proto_rank_loss_weight * rank_loss
 
             if not loss.requires_grad:
                 loss = loss + (mod_pred.sum() + head_pred.sum() + pv_pred.sum()) * 0.0

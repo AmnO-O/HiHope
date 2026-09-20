@@ -126,10 +126,12 @@ class Trainer:
 
         train_ds = CompDataset(
             train_rows, tokenizer, max_len=self.cfg.max_context_length,
-            proto_stream=self.cfg.proto_stream)
+            proto_stream=self.cfg.proto_stream,
+            target_mask_prob=getattr(self.cfg, 'target_mask_prob', 0.0))
         val_ds = CompDataset(
             val_rows, tokenizer, max_len=self.cfg.max_context_length,
-            proto_stream=self.cfg.proto_stream)
+            proto_stream=self.cfg.proto_stream,
+            target_mask_prob=0.0)
         
         # Chỉ bật persistent_workers khi num_workers > 0 để tránh deadlock
         num_workers = max(0, self.cfg.num_workers)
@@ -326,6 +328,8 @@ class Trainer:
                 self.device, grad_clip=self.cfg.grad_clip,
                 accum_steps=self.cfg.accum_steps, report=diag,
                 ema=ema,
+                proto_rank_loss_weight=getattr(self.cfg, 'proto_rank_loss', 0.0),
+                proto_margin=getattr(self.cfg, 'proto_margin', 0.2),
             )
 
             # Compute train rho directly from in-epoch predictions

@@ -104,7 +104,7 @@ class SemanticShiftFusion(nn.Module):
         diff = h_ctx - h_proto
         kv = torch.stack([h_ctx, h_proto, diff], dim=1)  # (B, 3, H)
         type_ids = torch.tensor([0, 1, 2], device=h_ctx.device, dtype=torch.long)
-        kv = kv + self.type_emb[type_ids]
+        kv = kv + self.type_emb[type_ids].to(dtype=kv.dtype)
 
         # h_ctx acts as Query attending across all three semantic roles
         q = h_ctx.unsqueeze(1)  # (B, 1, H)
@@ -138,6 +138,10 @@ def prototype_rank_loss(
     if mask is not None:
         cos_sim = cos_sim[mask]
         ratings = ratings[mask]
+
+    valid = torch.isfinite(ratings)
+    cos_sim = cos_sim[valid]
+    ratings = ratings[valid]
 
     n = cos_sim.size(0)
     if n < 2:
