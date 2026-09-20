@@ -42,12 +42,14 @@ class TwoStreamBiEncoderModel(nn.Module):
         fusion_type: str = "cross_attention",
         fusion_layers: int = 2,
         fusion_heads: int = 4,
+        extract_layers: Optional[Tuple[int, ...]] = (14, 15, 16, 17, 18),
     ):
         super().__init__()
         self.lm = AutoModel.from_pretrained(backbone)
         self.hidden_size = hidden_size
         self.sigma_floor = sigma_floor
         self.fusion_type = fusion_type
+        self.extract_layers = extract_layers
 
         # Fusion: Cross-Attention Semantic Shift Transformer or Linear projection
         if fusion_type == "cross_attention":
@@ -94,6 +96,19 @@ class TwoStreamBiEncoderModel(nn.Module):
         """Return the prediction heads and fusion layers for Phase 1 unfreezing."""
         return [self.fusion, self.head]
 
+    def _extract_hidden(self, outputs) -> torch.Tensor:
+        """Extract hidden states from configured layers (e.g. upper-middle layers 14-18).
+        
+        If extract_layers is specified and hidden_states are available, averages
+        the selected layer representations. Otherwise falls back to last_hidden_state.
+        """
+        if self.extract_layers and hasattr(outputs, 'hidden_states') and outputs.hidden_states is not None:
+            # outputs.hidden_states has 23 entries for a 22-layer model (idx 0 is embedding)
+            selected = [outputs.hidden_states[idx] for idx in self.extract_layers if idx < len(outputs.hidden_states)]
+            if selected:
+                return torch.stack(selected, dim=0).mean(dim=0)
+        return outputs.last_hidden_state
+
     def pool_active_context(
         self,
         hidden_states: torch.Tensor,
@@ -125,9 +140,11 @@ class TwoStreamBiEncoderModel(nn.Module):
         outputs = self.lm(
             input_ids=word_input_ids,
             attention_mask=word_attention_mask,
+            output_hidden_states=bool(self.extract_layers),
             return_dict=True,
         )
-        return pool_prototype(outputs.last_hidden_state, word_attention_mask)
+        hidden = self._extract_hidden(outputs)
+        return pool_prototype(hidden, word_attention_mask)
 
     def forward_stream_context(
         self,
@@ -143,9 +160,11 @@ class TwoStreamBiEncoderModel(nn.Module):
         outputs = self.lm(
             input_ids=ctx_input_ids,
             attention_mask=ctx_attention_mask,
+            output_hidden_states=bool(self.extract_layers),
             return_dict=True,
         )
-        return self.pool_active_context(outputs.last_hidden_state, target_mask)
+        hidden = self._extract_hidden(outputs)
+        return self.pool_active_context(hidden, target_mask)
 
     def _forward_pair(
         self,
@@ -216,8 +235,13 @@ class TwoStreamBiEncoderModel(nn.Module):
         pv_span_mask = mod_span_mask | head_span_mask
 
         # Stream 2: Full context sentence encoding
-        ctx_outputs = self.lm(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
-        ctx_hidden = ctx_outputs.last_hidden_state
+        ctx_outputs = self.lm(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=bool(self.extract_layers),
+            return_dict=True,
+        )
+        ctx_hidden = self._extract_hidden(ctx_outputs)
 
         h_ctx_mod = self.pool_active_context(ctx_hidden, mod_span_mask)
         h_ctx_head = self.pool_active_context(ctx_hidden, head_span_mask)
@@ -227,8 +251,13 @@ class TwoStreamBiEncoderModel(nn.Module):
         if 'target' in batch and 'proto_ids' in batch:
             proto_ids = batch['proto_ids']
             proto_mask = batch['proto_mask']
-            proto_outputs = self.lm(input_ids=proto_ids, attention_mask=proto_mask, return_dict=True)
-            h_word = pool_prototype(proto_outputs.last_hidden_state, proto_mask)
+            proto_outputs = self.lm(
+                input_ids=proto_ids,
+                attention_mask=proto_mask,
+                output_hidden_states=bool(self.extract_layers),
+                return_dict=True,
+            )
+            h_word = pool_prototype(self._extract_hidden(proto_outputs), proto_mask)
 
             tgt = batch['target']
             # Select active context according to target (0: mod, 1: head, 2: pv)
@@ -247,21 +276,41 @@ class TwoStreamBiEncoderModel(nn.Module):
         else:
             # Multi-target / Joint mode (score each target with lexical prototypes)
             if 'mod_proto_ids' in batch and 'head_proto_ids' in batch:
-                proto_mod_out = self.lm(input_ids=batch['mod_proto_ids'], attention_mask=batch['mod_proto_mask'], return_dict=True)
-                h_proto_mod = pool_prototype(proto_mod_out.last_hidden_state, batch['mod_proto_mask'])
+                proto_mod_out = self.lm(
+                    input_ids=batch['mod_proto_ids'],
+                    attention_mask=batch['mod_proto_mask'],
+                    output_hidden_states=bool(self.extract_layers),
+                    return_dict=True,
+                )
+                h_proto_mod = pool_prototype(self._extract_hidden(proto_mod_out), batch['mod_proto_mask'])
 
-                proto_head_out = self.lm(input_ids=batch['head_proto_ids'], attention_mask=batch['head_proto_mask'], return_dict=True)
-                h_proto_head = pool_prototype(proto_head_out.last_hidden_state, batch['head_proto_mask'])
+                proto_head_out = self.lm(
+                    input_ids=batch['head_proto_ids'],
+                    attention_mask=batch['head_proto_mask'],
+                    output_hidden_states=bool(self.extract_layers),
+                    return_dict=True,
+                )
+                h_proto_head = pool_prototype(self._extract_hidden(proto_head_out), batch['head_proto_mask'])
 
                 # For PV rows, proto_ids encodes the full compound verb (e.g. "abziehen" or "give up")
                 if 'proto_ids' in batch and 'proto_mask' in batch:
-                    proto_pv_out = self.lm(input_ids=batch['proto_ids'], attention_mask=batch['proto_mask'], return_dict=True)
-                    h_proto_pv = pool_prototype(proto_pv_out.last_hidden_state, batch['proto_mask'])
+                    proto_pv_out = self.lm(
+                        input_ids=batch['proto_ids'],
+                        attention_mask=batch['proto_mask'],
+                        output_hidden_states=bool(self.extract_layers),
+                        return_dict=True,
+                    )
+                    h_proto_pv = pool_prototype(self._extract_hidden(proto_pv_out), batch['proto_mask'])
                 else:
                     h_proto_pv = 0.5 * (h_proto_mod + h_proto_head)
             elif 'proto_ids' in batch and 'proto_mask' in batch:
-                proto_out = self.lm(input_ids=batch['proto_ids'], attention_mask=batch['proto_mask'], return_dict=True)
-                h_word_default = pool_prototype(proto_out.last_hidden_state, batch['proto_mask'])
+                proto_out = self.lm(
+                    input_ids=batch['proto_ids'],
+                    attention_mask=batch['proto_mask'],
+                    output_hidden_states=bool(self.extract_layers),
+                    return_dict=True,
+                )
+                h_word_default = pool_prototype(self._extract_hidden(proto_out), batch['proto_mask'])
                 h_proto_mod = h_word_default
                 h_proto_head = h_word_default
                 h_proto_pv = h_word_default

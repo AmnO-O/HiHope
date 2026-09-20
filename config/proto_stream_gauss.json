@@ -8,6 +8,7 @@
   "fusion_type": "cross_attention",
   "fusion_layers": 2,
   "fusion_heads": 4,
+  "extract_layers": [14, 15, 16, 17, 18],
   "target_mask_prob": 0.15,
   "train_aux": ["nctti_en_scored.tsv"],
   "max_context_length": 256,

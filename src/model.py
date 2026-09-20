@@ -473,6 +473,10 @@ def build_model(cfg, device, load_from: Optional[str | Path] = None) -> nn.Modul
             hidden_size=cfg.hidden_size,
             head_hidden=cfg.head_hidden,
             dropout=cfg.dropout,
+            fusion_type=getattr(cfg, 'fusion_type', 'cross_attention'),
+            fusion_layers=getattr(cfg, 'fusion_layers', 2),
+            fusion_heads=getattr(cfg, 'fusion_heads', 4),
+            extract_layers=getattr(cfg, 'extract_layers', (14, 15, 16, 17, 18)),
         )
         if load_from is not None:
             load_from = Path(load_from)
