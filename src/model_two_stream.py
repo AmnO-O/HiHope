@@ -246,20 +246,38 @@ class TwoStreamBiEncoderModel(nn.Module):
             mod_sigma = head_sigma = pv_sigma = sigma
         else:
             # Multi-target / Joint mode (score each target with lexical prototypes)
-            if 'proto_ids' in batch and 'proto_mask' in batch:
+            if 'mod_proto_ids' in batch and 'head_proto_ids' in batch:
+                proto_mod_out = self.lm(input_ids=batch['mod_proto_ids'], attention_mask=batch['mod_proto_mask'], return_dict=True)
+                h_proto_mod = pool_prototype(proto_mod_out.last_hidden_state, batch['mod_proto_mask'])
+
+                proto_head_out = self.lm(input_ids=batch['head_proto_ids'], attention_mask=batch['head_proto_mask'], return_dict=True)
+                h_proto_head = pool_prototype(proto_head_out.last_hidden_state, batch['head_proto_mask'])
+
+                # For PV rows, proto_ids encodes the full compound verb (e.g. "abziehen" or "give up")
+                if 'proto_ids' in batch and 'proto_mask' in batch:
+                    proto_pv_out = self.lm(input_ids=batch['proto_ids'], attention_mask=batch['proto_mask'], return_dict=True)
+                    h_proto_pv = pool_prototype(proto_pv_out.last_hidden_state, batch['proto_mask'])
+                else:
+                    h_proto_pv = 0.5 * (h_proto_mod + h_proto_head)
+            elif 'proto_ids' in batch and 'proto_mask' in batch:
                 proto_out = self.lm(input_ids=batch['proto_ids'], attention_mask=batch['proto_mask'], return_dict=True)
                 h_word_default = pool_prototype(proto_out.last_hidden_state, batch['proto_mask'])
                 h_proto_mod = h_word_default
                 h_proto_head = h_word_default
+                h_proto_pv = h_word_default
             else:
                 h_proto_mod = self._get_prototype_from_emb(input_ids, mod_span_mask)
                 h_proto_head = self._get_prototype_from_emb(input_ids, head_span_mask)
-
-            h_proto_pv = 0.5 * (h_proto_mod + h_proto_head)
+                h_proto_pv = 0.5 * (h_proto_mod + h_proto_head)
 
             mod_mu, mod_sigma = self._forward_pair(h_ctx_mod, h_proto_mod)
+            self.last_mod_cos = getattr(self, 'last_cos_sim', None)
+
             head_mu, head_sigma = self._forward_pair(h_ctx_head, h_proto_head)
+            self.last_head_cos = getattr(self, 'last_cos_sim', None)
+
             pv_mu, pv_sigma = self._forward_pair(h_ctx_pv, h_proto_pv)
+            self.last_pv_cos = getattr(self, 'last_cos_sim', None)
 
             if not self.training:
                 mod_mu = mod_mu.clamp(SCORE_MIN, SCORE_MAX)

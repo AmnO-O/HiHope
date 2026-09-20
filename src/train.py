@@ -117,18 +117,33 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
 
             # Contrastive Prototype Margin Ranking Loss
             if proto_rank_loss_weight > 0.0:
-                last_cos = getattr(model, 'last_cos_sim', None)
-                if last_cos is None and hasattr(model, 'fusion') and hasattr(model.fusion, 'last_cos'):
-                    last_cos = model.fusion.last_cos
-                if last_cos is not None:
-                    from .prototype_stream import prototype_rank_loss
-                    if 'target' in batch:
+                from .prototype_stream import prototype_rank_loss
+                if 'target' in batch:
+                    last_cos = getattr(model, 'last_cos_sim', None)
+                    if last_cos is not None:
                         labels = torch.where(batch['target'] == 1, batch['head_avg'], batch['mod_avg'])
-                    else:
-                        labels = batch['mod_avg']
-                    rank_loss = prototype_rank_loss(
-                        last_cos, labels, margin=proto_margin, mask=allowed
-                    )
+                        rank_loss = prototype_rank_loss(
+                            last_cos, labels, margin=proto_margin, mask=allowed
+                        )
+                        loss = loss + proto_rank_loss_weight * rank_loss
+                else:
+                    # Joint mode: apply margin ranking loss to each target independently
+                    rank_loss = 0.0
+                    m_cos = getattr(model, 'last_mod_cos', None)
+                    if m_cos is not None and mod_mask.any():
+                        rank_loss = rank_loss + prototype_rank_loss(
+                            m_cos, batch['mod_avg'], margin=proto_margin, mask=mod_mask
+                        )
+                    h_cos = getattr(model, 'last_head_cos', None)
+                    if h_cos is not None and head_mask.any():
+                        rank_loss = rank_loss + prototype_rank_loss(
+                            h_cos, batch['head_avg'], margin=proto_margin, mask=head_mask
+                        )
+                    p_cos = getattr(model, 'last_pv_cos', None)
+                    if p_cos is not None and pv_mask.any():
+                        rank_loss = rank_loss + prototype_rank_loss(
+                            p_cos, batch['mod_avg'], margin=proto_margin, mask=pv_mask
+                        )
                     loss = loss + proto_rank_loss_weight * rank_loss
 
             if not loss.requires_grad:

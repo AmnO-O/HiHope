@@ -369,25 +369,43 @@ class CompDataset(_DatasetBase):
             'is_pv': torch.tensor(bool(r.get('is_pv', False)), dtype=torch.bool),
         }
         if self.proto_stream:
-            # Stream 1: Tokenize the isolated target word for dynamic prototype representation
+            # Stream 1: Tokenize isolated constituent words for prototype representations
             t = r.get('target')
+            is_pv = bool(r.get('is_pv', False))
+            mod_word = r.get('mod', '') or ''
+            head_word = r.get('head', '') or ''
+            compound_word = r.get('compound', '') or ''
+            pv_word = compound_word or (f"{mod_word} {head_word}".strip())
+
             if t == 'mod':
-                word = r.get('mod', '')
+                word = mod_word
             elif t == 'head':
-                word = r.get('head', '')
+                word = head_word
             elif t == 'pv':
-                word = r.get('compound', '')
+                word = pv_word
+            elif is_pv:
+                # For PV rows, the prototype must represent the full particle verb
+                word = pv_word
             else:
-                word = r.get('mod', '') or r.get('compound', '')
-            p_enc = self.tokenizer(
-                word, max_length=16, truncation=True, return_tensors='pt'
-            ) if (word and hasattr(self.tokenizer, '__call__')) else None
-            if p_enc is not None:
-                item['proto_ids'] = p_enc['input_ids'].squeeze(0)
-                item['proto_mask'] = p_enc['attention_mask'].squeeze(0)
-            else:
-                item['proto_ids'] = torch.zeros(1, dtype=input_ids.dtype)
-                item['proto_mask'] = torch.zeros(1, dtype=attention_mask.dtype)
+                word = mod_word or compound_word
+
+            def _tok_word(w: str):
+                if w and hasattr(self.tokenizer, '__call__'):
+                    p = self.tokenizer(w, max_length=16, truncation=True, return_tensors='pt')
+                    return p['input_ids'].squeeze(0), p['attention_mask'].squeeze(0)
+                return torch.zeros(1, dtype=input_ids.dtype), torch.zeros(1, dtype=attention_mask.dtype)
+
+            p_ids, p_mask = _tok_word(word)
+            item['proto_ids'] = p_ids
+            item['proto_mask'] = p_mask
+
+            # Provide explicit separate prototypes for joint multi-target mode
+            m_ids, m_mask = _tok_word(mod_word)
+            h_ids, h_mask = _tok_word(head_word)
+            item['mod_proto_ids'] = m_ids
+            item['mod_proto_mask'] = m_mask
+            item['head_proto_ids'] = h_ids
+            item['head_proto_mask'] = h_mask
         if r.get('target') is not None:
             item['target'] = torch.tensor(_TARGET_CODE[r['target']], dtype=torch.long)
         return item
@@ -423,7 +441,14 @@ class CompDataset(_DatasetBase):
                     else:
                         span = item['mod_span_mask'] | item['head_span_mask']
                 else:
-                    span = item['mod_span_mask'] | item['head_span_mask']
+                    # In joint mode, mask modifier OR head alternately (50/50), never both
+                    # at the same time so context retainment remains intact.
+                    if item['mod_span_mask'].any() and item['head_span_mask'].any():
+                        span = item['mod_span_mask'] if torch.rand(1).item() < 0.5 else item['head_span_mask']
+                    elif item['mod_span_mask'].any():
+                        span = item['mod_span_mask']
+                    else:
+                        span = item['head_span_mask']
 
                 if span.any():
                     new_input_ids[span] = self.mask_token_id
@@ -436,12 +461,16 @@ class CompDataset(_DatasetBase):
 # --------------------------------------------------------------------------- #
 def collate_comp(batch: List[Dict], pad_token_id: int = 0) -> Dict[str, torch.Tensor]:
     out: Dict[str, torch.Tensor] = {}
-    seq_keys = ('input_ids', 'attention_mask', 'mod_span_mask', 'head_span_mask',
-                'proto_ids', 'proto_mask')
+    seq_keys = (
+        'input_ids', 'attention_mask', 'mod_span_mask', 'head_span_mask',
+        'proto_ids', 'proto_mask',
+        'mod_proto_ids', 'mod_proto_mask',
+        'head_proto_ids', 'head_proto_mask',
+    )
     for key in batch[0]:
         if key in seq_keys:
             length = max(int(b[key].size(0)) for b in batch)
-            fill = pad_token_id if key in ('input_ids', 'proto_ids') else 0
+            fill = pad_token_id if key in ('input_ids', 'proto_ids', 'mod_proto_ids', 'head_proto_ids') else 0
             out[key] = torch.full((len(batch), length), fill_value=fill,
                                   dtype=batch[0][key].dtype)
             for i, b in enumerate(batch):
