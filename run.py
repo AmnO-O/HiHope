@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
-from py_src.config import Config, coerce_value
+from src.config import Config, coerce_value
 
 _COMMANDS = ('train80', 'train5', 'predict', 'warmup', 'probe', 'smoke')
 _TRAIN_MODES = ('train80', 'train5', 'predict')
@@ -115,7 +115,7 @@ def main(argv=None) -> int:
         os.environ['TORCH_USE_CUDA_DSA'] = '1'
 
     import torch
-    from py_src.utils import get_device, get_logger, resolve_paths, set_seed
+    from src.utils import get_device, get_logger, resolve_paths, set_seed
 
     device = get_device()
     logger = get_logger()
@@ -146,7 +146,7 @@ def main(argv=None) -> int:
                      output_dir, output_dir)
         return 1
 
-    from py_src import pipeline
+    from src import pipeline
 
     started = datetime.now()
     try:

@@ -54,23 +54,18 @@ export const DocsModal: React.FC<DocsModalProps> = ({ isOpen, onClose }) => {
           <div className="space-y-2 border-b border-slate-100 pb-5">
             <h3 className="text-sm font-bold text-slate-900 flex items-center space-x-2">
               <span className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-xs font-mono font-bold">2</span>
-              <span>Multi-Exit vs. Combined Backend (<code className="text-indigo-600 font-mono">src/model.py & src/model_combined.py</code>)</span>
+              <span>Canonical Two-Stream Bi-Encoder Model (<code className="text-indigo-600 font-mono">src/model_two_stream.py</code>)</span>
             </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 text-xs">
-              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                <strong className="text-slate-900 block mb-1">Multi-Exit (<code className="font-mono text-indigo-600">src/model.py</code>)</strong>
-                Taps representations from intermediate transformer blocks corresponding to conceptual depth:
-                <ul className="list-disc list-inside mt-1 space-y-0.5 text-slate-600">
-                  <li>Modifier: Layer 18</li>
-                  <li>Head: Layer 19</li>
-                  <li>Compound / PV: Layers 20–21</li>
-                </ul>
-                Employs <em>CrossSpanAttentionBlock</em> for pre-pooling token-level constituent interaction, and gated residuals initialized to 1.0 (α_attn=1.0, α_ffn=1.0).
-              </div>
-              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                <strong className="text-slate-900 block mb-1">Combined (<code className="font-mono text-indigo-600">src/model_combined.py</code>)</strong>
-                Routes through all 22 layers of mmBERT, extracts active target spans via <code className="font-mono">pool_active</code>, and shares a single unified <code className="font-mono">GaussHead</code> across all 3 targets, maximizing parameter efficiency on small datasets.
-              </div>
+            <div className="p-3.5 rounded-lg bg-indigo-50/50 border border-indigo-200/70 text-xs space-y-2">
+              <p className="text-slate-700 font-medium">
+                The architecture is unified under a single Two-Stream Bi-Encoder sharing the mmBERT-base backbone:
+              </p>
+              <ul className="list-disc list-inside space-y-1 text-slate-600">
+                <li><strong className="text-slate-900 font-semibold">Stream 1 (Target Word):</strong> Encodes the isolated constituent word/lemma without context to produce prototype embedding <code className="font-mono text-indigo-700">h_word</code> via masked-mean pooling.</li>
+                <li><strong className="text-slate-900 font-semibold">Stream 2 (Sentence Context):</strong> Encodes the complete sentence, then extracts the constituent span using span-mask pooling to produce in-context embedding <code className="font-mono text-indigo-700">h_context</code>.</li>
+                <li><strong className="text-slate-900 font-semibold">Interaction Signals:</strong> Computes displacement <code className="font-mono text-indigo-700">Δh = h_context - h_word</code>, element-wise product <code className="font-mono text-indigo-700">h_context ⊙ h_word</code>, and calibrated cosine similarity <code className="font-mono text-indigo-700">cos(h_context, h_word)</code>.</li>
+                <li><strong className="text-slate-900 font-semibold">Lightweight Fusion:</strong> Concatenates <code className="font-mono text-indigo-700">[h_context; h_word; Δh; h_context ⊙ h_word; cos]</code> (dimension <code className="font-mono">4H + 1</code>) into a Linear layer with LayerNorm, GELU, and Dropout into a unified <code className="font-mono">GaussHead</code>.</li>
+              </ul>
             </div>
           </div>
 

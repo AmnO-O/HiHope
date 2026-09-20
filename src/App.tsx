@@ -1,14 +1,13 @@
 import React, { useState, useMemo } from 'react';
-import { BenchmarkExample, ModelBackend, TargetType } from './types';
+import { BenchmarkExample, TargetType } from './types';
 import { BENCHMARK_EXAMPLES } from './data/benchmarkDataset';
 import { alignSpansInContext, buildTokenChunks } from './engine/morphology';
-import { predictCompositionality, simulateTwoStreamVectors, getLayerExits } from './engine/motune';
+import { predictCompositionality, simulateTwoStreamVectors } from './engine/motune';
 import { Header } from './components/Header';
 import { SentenceInput } from './components/SentenceInput';
 import { SpanVisualizer } from './components/SpanVisualizer';
 import { DistributionViewer } from './components/DistributionViewer';
 import { PrototypeStreamViewer } from './components/PrototypeStreamViewer';
-import { ArchitectureComparison } from './components/ArchitectureComparison';
 import { LossInspector } from './components/LossInspector';
 import { TwoStreamVisualizer } from './components/TwoStreamVisualizer';
 import { CurrentModelFlowVisualizer } from './components/CurrentModelFlowVisualizer';
@@ -23,7 +22,6 @@ export const App: React.FC = () => {
   const [modWord, setModWord] = useState<string>(defaultExample.mod);
   const [headWord, setHeadWord] = useState<string>(defaultExample.head);
   const [activeTarget, setActiveTarget] = useState<TargetType>(defaultExample.target);
-  const [backend, setBackend] = useState<ModelBackend>('twostream');
   const [docsOpen, setDocsOpen] = useState<boolean>(false);
 
   // Synchronize when a benchmark example is selected
@@ -56,7 +54,7 @@ export const App: React.FC = () => {
     return `${modWord} ${headWord}`.trim();
   }, [activeTarget, modWord, headWord]);
 
-  // Two-stream vectors & cosine metrics (src/prototype_stream.py)
+  // Two-stream vectors & cosine metrics (src/model_two_stream.py)
   const prototypeMetrics = useMemo(() => {
     return simulateTwoStreamVectors(targetWord, sentence, activeTarget);
   }, [targetWord, sentence, activeTarget]);
@@ -78,18 +76,15 @@ export const App: React.FC = () => {
       modWord,
       headWord,
       activeTarget,
-      backend,
       goldMu,
       goldSigma
     );
-  }, [sentence, modWord, headWord, activeTarget, backend, selectedExample]);
+  }, [sentence, modWord, headWord, activeTarget, selectedExample]);
 
   return (
     <div className="min-h-screen bg-slate-100/60 text-slate-900 pb-16">
       {/* Header */}
       <Header
-        backend={backend}
-        onBackendChange={setBackend}
         activeTarget={activeTarget}
         onTargetChange={setActiveTarget}
         onOpenDocs={() => setDocsOpen(true)}
@@ -129,24 +124,17 @@ export const App: React.FC = () => {
           activeTarget={activeTarget}
         />
 
-        {/* Section 2: Distribution Viewer & Predictions */}
+        {/* Section 3: Distribution Viewer & Predictions */}
         <DistributionViewer
           prediction={prediction}
           activeTarget={activeTarget}
         />
 
-        {/* Section 3: Two-Stream Prototype & Semantic Displacement */}
+        {/* Section 4: Two-Stream Prototype & Semantic Displacement */}
         <PrototypeStreamViewer
           metrics={prototypeMetrics}
           targetWord={targetWord}
           activeTarget={activeTarget}
-        />
-
-        {/* Section 4: Architecture Comparison */}
-        <ArchitectureComparison
-          backend={backend}
-          activeTarget={activeTarget}
-          onBackendChange={setBackend}
         />
 
         {/* Section 5: True Two-Stream Bi-Encoder Architecture */}

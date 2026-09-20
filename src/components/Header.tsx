@@ -1,18 +1,14 @@
 import React from 'react';
-import { ModelBackend, TargetType } from '../types';
-import { Layers, Network, Activity, Sparkles, BookOpen } from 'lucide-react';
+import { TargetType } from '../types';
+import { GitBranch, BookOpen } from 'lucide-react';
 
 interface HeaderProps {
-  backend: ModelBackend;
-  onBackendChange: (backend: ModelBackend) => void;
   activeTarget: TargetType;
   onTargetChange: (target: TargetType) => void;
   onOpenDocs: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  backend,
-  onBackendChange,
   activeTarget,
   onTargetChange,
   onOpenDocs,
@@ -28,11 +24,11 @@ export const Header: React.FC<HeaderProps> = ({
             <div className="flex items-center space-x-2">
               <h1 className="text-xl font-bold text-slate-900 tracking-tight">MoTune</h1>
               <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200/60">
-                Gaussian Compositionality
+                Two-Stream Bi-Encoder
               </span>
             </div>
             <p className="text-xs text-slate-500 font-medium">
-              Multi-exit & Two-stream Prototype Architecture for Noun Compounds & Particle Verbs
+              Dual-stream semantic displacement architecture (h_word vs h_context) & GaussHead prediction
             </p>
           </div>
         </div>
@@ -76,48 +72,10 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           </div>
 
-          {/* Backend Selector */}
-          <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200/80 text-xs font-medium">
-            <span className="px-2 text-slate-500 text-[11px] uppercase tracking-wider font-semibold">Backend:</span>
-            <button
-              id="backend-twostream-btn"
-              onClick={() => onBackendChange('twostream')}
-              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-md transition-all ${
-                backend === 'twostream'
-                  ? 'bg-indigo-600 text-white font-semibold shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-              title="Two-Stream Bi-Encoder (h_word vs h_context semantic displacement)"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Two-Stream</span>
-            </button>
-            <button
-              id="backend-combined-btn"
-              onClick={() => onBackendChange('combined')}
-              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-md transition-all ${
-                backend === 'combined'
-                  ? 'bg-indigo-600 text-white font-semibold shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-              title="Single-pass Layer 22 masked-mean pooling"
-            >
-              <Network className="w-3.5 h-3.5" />
-              <span>Combined</span>
-            </button>
-            <button
-              id="backend-exits-btn"
-              onClick={() => onBackendChange('exits')}
-              className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-md transition-all ${
-                backend === 'exits'
-                  ? 'bg-indigo-600 text-white font-semibold shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-              title="Dedicated intermediate transformer exits (layers 18, 19, 21)"
-            >
-              <Layers className="w-3.5 h-3.5" />
-              <span>Multi-Exit</span>
-            </button>
+          {/* Canonical Two-Stream Badge */}
+          <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-indigo-50/80 border border-indigo-200/60 text-indigo-800 text-xs font-semibold">
+            <GitBranch className="w-3.5 h-3.5 text-indigo-600" />
+            <span>Two-Stream (Shared mmBERT)</span>
           </div>
 
           <button
@@ -126,7 +84,7 @@ export const Header: React.FC<HeaderProps> = ({
             className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 text-xs font-semibold shadow-xs transition-colors"
           >
             <BookOpen className="w-3.5 h-3.5 text-slate-500" />
-            <span>Techniques & Docs</span>
+            <span>Architecture Docs</span>
           </button>
         </div>
       </div>

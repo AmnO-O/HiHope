@@ -166,11 +166,14 @@ class Trainer:
 
     # ------------------------------------------------------------------ #
     def _pred_heads(self, model) -> List[nn.Module]:
-        """The NN modifier/head exits and the overall PV composition exit."""
-        heads: List[nn.Module] = [model.mod_gauss, model.head_gauss, model.pv_gauss]
-        shift = getattr(model, 'shift_fuse', None)
-        if shift is not None:
-            heads.append(shift)
+        """The prediction heads, fusion modules, and interaction layers."""
+        if hasattr(model, 'pred_heads'):
+            return model.pred_heads()
+        heads: List[nn.Module] = []
+        for attr in ('fusion', 'head', 'mod_gauss', 'head_gauss', 'pv_gauss', 'shift_fuse'):
+            m = getattr(model, attr, None)
+            if m is not None and isinstance(m, nn.Module):
+                heads.append(m)
         seen = set()
         uniq: List[nn.Module] = []
         for m in heads:

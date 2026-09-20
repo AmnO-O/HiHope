@@ -458,17 +458,30 @@ class MMBertModel(nn.Module):
         return self._forward_gauss(batch, with_logits, with_pv)
 
 
-def build_model(cfg, device, load_from: Optional[str | Path] = None) -> MMBertModel:
+from .model_two_stream import TwoStreamBiEncoderModel
+
+
+def build_model(cfg, device, load_from: Optional[str | Path] = None) -> nn.Module:
     """Construct the gauss scoring model, optionally loading a backbone state dict.
 
-    ``load_from`` is a torch state_dict with the LM backbone keys only
-    (``model.lm.state_dict()``); scorer heads always get fresh init.
-
-    Dispatches to :mod:`src.model_combined` when ``cfg.model_backend == 'combined'``.
+    Defaults to the canonical TwoStreamBiEncoderModel.
     """
-    if getattr(cfg, 'model_backend', 'exits') == 'combined':
-        from .model_combined import build_combined_model
-        return build_combined_model(cfg, device, load_from=load_from)
+    backend = getattr(cfg, 'model_backend', 'twostream')
+    if backend == 'twostream':
+        model = TwoStreamBiEncoderModel(
+            backbone=cfg.backbone,
+            hidden_size=cfg.hidden_size,
+            head_hidden=cfg.head_hidden,
+            dropout=cfg.dropout,
+        )
+        if load_from is not None:
+            load_from = Path(load_from)
+            if not load_from.is_file():
+                raise FileNotFoundError(f'state dict not found: {load_from}')
+            state = torch.load(load_from, map_location='cpu', weights_only=True)
+            model.lm.load_state_dict(state)
+        return model.to(device)
+
     model = MMBertModel(
         cfg.backbone, hidden_size=cfg.hidden_size, dropout=cfg.dropout,
         head_hidden=cfg.head_hidden,

@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 Mode = Literal['train80']
-ModelBackend = Literal['exits', 'combined']
+ModelBackend = Literal['twostream', 'combined', 'exits']
 
 _MODES = ('train80',)
-_MODEL_BACKENDS = ('exits', 'combined')
+_MODEL_BACKENDS = ('twostream', 'combined', 'exits')
 
 
 @dataclass
@@ -32,9 +32,9 @@ class Config:
     # === model ===
     backbone: str = 'jhu-clsp/mmBERT-base'
     hidden_size: int = 768
-    # 'exits' = dedicated intermediate exits (src.model); 'combined' = final-layer
-    # readout fusing mod/head/context (src.model_combined).
-    model_backend: ModelBackend = 'exits'
+    # 'twostream' = canonical Two-Stream Bi-Encoder (src.model_two_stream);
+    # 'exits' = legacy dedicated intermediate exits (src.model).
+    model_backend: ModelBackend = 'twostream'
     # Every output uses a dedicated intermediate exit. hidden_states[0] is the
     # embedding output, so 19/20/21,22 select transformer blocks 18/19/20,21.
     # The PV exit predicts one overall distribution from Base and Particle.
@@ -203,6 +203,9 @@ class Config:
 
     def validate(self) -> None:
         errors: List[str] = []
+
+        if self.model_backend == 'combined':
+            self.model_backend = 'twostream'
 
         if self.mode not in _MODES:
             errors.append(f'mode must be one of {_MODES}, got {self.mode!r}')

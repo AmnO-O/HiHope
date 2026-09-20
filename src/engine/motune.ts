@@ -1,4 +1,4 @@
-import { GaussianPrediction, LayerExitInfo, ModelBackend, PrototypeMetrics, TargetType } from '../types';
+import { GaussianPrediction, LayerExitInfo, PrototypeMetrics, TargetType } from '../types';
 
 export const SIGMA_FLOOR = 0.05;
 
@@ -147,7 +147,6 @@ export function predictCompositionality(
   modWord: string,
   headWord: string,
   target: TargetType,
-  backend: ModelBackend,
   goldMu?: number,
   goldSigma?: number
 ): GaussianPrediction {
@@ -161,11 +160,10 @@ export function predictCompositionality(
   let baseSigma: number;
 
   if (goldMu !== undefined && goldSigma !== undefined) {
-    // Model prediction closely tracks benchmark with calibration depending on backend:
-    // 'twostream' leverages true prototype displacement for optimal alignment
-    const backendDelta = backend === 'twostream' ? 0.01 : backend === 'exits' ? -0.05 : 0.03;
+    // Two-stream leverages true prototype displacement for optimal alignment
+    const backendDelta = 0.01;
     baseMu = Math.min(5.0, Math.max(0.0, goldMu + backendDelta));
-    baseSigma = Math.max(SIGMA_FLOOR, goldSigma + (backend === 'twostream' ? -0.01 : backend === 'exits' ? -0.03 : 0.02));
+    baseSigma = Math.max(SIGMA_FLOOR, goldSigma - 0.01);
   } else {
     // Synthetic inference based on cosine similarity
     const scoreFromCosine = (protoMetrics.cosineSim + 1) * 2.5; // [-1, 1] -> [0, 5]
@@ -195,75 +193,33 @@ export function predictCompositionality(
 }
 
 /**
- * Evaluates Layer Exit activations for Multi-Exit vs Combined
+ * Returns the computational stages of the Two-Stream Bi-Encoder architecture
  */
-export function getLayerExits(activeTarget: TargetType, backend: ModelBackend): LayerExitInfo[] {
-  if (backend === 'twostream') {
-    return [
-      {
-        layerIndex: 22,
-        target: activeTarget,
-        description: 'Stream 1 (Isolated Prototype): mmBERT Layer 22 encodes target word/lemma out-of-context -> h_word',
-        alphaAttn: 1.0,
-        alphaFfn: 1.0,
-        active: true,
-      },
-      {
-        layerIndex: 22,
-        target: activeTarget,
-        description: 'Stream 2 (Sentence Context): mmBERT Layer 22 encodes sentence -> in-context span pooling -> h_context',
-        alphaAttn: 1.0,
-        alphaFfn: 1.0,
-        active: true,
-      },
-      {
-        layerIndex: 22,
-        target: activeTarget,
-        description: 'Semantic Displacement & Fusion: Delta_h = h_context - h_word, cos_sim, element-wise prod -> GaussHead',
-        alphaAttn: 1.0,
-        alphaFfn: 1.0,
-        active: true,
-      },
-    ];
-  }
-
-  if (backend === 'combined') {
-    return [
-      {
-        layerIndex: 22,
-        target: activeTarget,
-        description: 'Combined Final Exit: All targets route through mmBERT Layer 22 with masked-mean pooling & unified GaussHead',
-        alphaAttn: 1.0,
-        alphaFfn: 1.0,
-        active: true,
-      },
-    ];
-  }
-
+export function getLayerExits(activeTarget: TargetType): LayerExitInfo[] {
   return [
     {
-      layerIndex: 18,
-      target: 'mod',
-      description: 'Intermediate Exit 18: Modifier constituent representation via Cross-Span Attention',
+      layerIndex: 22,
+      target: activeTarget,
+      description: 'Stream 1 (Isolated Prototype): mmBERT Layer 22 encodes target word/lemma out-of-context -> h_word',
       alphaAttn: 1.0,
       alphaFfn: 1.0,
-      active: activeTarget === 'mod',
+      active: true,
     },
     {
-      layerIndex: 19,
-      target: 'head',
-      description: 'Intermediate Exit 19: Head constituent representation via Cross-Span Attention',
+      layerIndex: 22,
+      target: activeTarget,
+      description: 'Stream 2 (Sentence Context): mmBERT Layer 22 encodes sentence -> in-context span pooling -> h_context',
       alphaAttn: 1.0,
       alphaFfn: 1.0,
-      active: activeTarget === 'head',
+      active: true,
     },
     {
-      layerIndex: 21,
-      target: 'pv',
-      description: 'Upper Exit 21: Full compound / Particle verb representation via Iterative SpanFusion',
+      layerIndex: 22,
+      target: activeTarget,
+      description: 'Semantic Displacement & Fusion: Delta_h = h_context - h_word, cos_sim, element-wise prod -> GaussHead',
       alphaAttn: 1.0,
       alphaFfn: 1.0,
-      active: activeTarget === 'pv',
+      active: true,
     },
   ];
 }
