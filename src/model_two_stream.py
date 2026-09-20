@@ -58,9 +58,9 @@ class TwoStreamBiEncoderModel(nn.Module):
         # Single unified GaussHead predicting (mu, sigma)
         self.head = GaussHead(
             in_features=hidden_size,
-            hidden_dim=head_hidden,
+            hidden=head_hidden,
             dropout=dropout,
-            sigma_floor=sigma_floor,
+            floor=sigma_floor,
         )
 
         # Cache last computed cosine and displacement magnitude for metrics/inspection
