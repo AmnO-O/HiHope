@@ -274,8 +274,8 @@ class Config:
 
         if self.proto_rank_loss < 0:
             errors.append(f'proto_rank_loss must be >= 0, got {self.proto_rank_loss}')
-        if self.proto_stream and self.model_backend != 'combined':
-            errors.append(f'proto_stream requires model_backend="combined", got "{self.model_backend}"')
+        if self.proto_stream and self.model_backend not in ('twostream', 'combined'):
+            errors.append(f'proto_stream requires model_backend="twostream", got "{self.model_backend}"')
 
         if errors:
             raise ValueError('Invalid configuration:\n  ' + '\n  '.join(errors))
