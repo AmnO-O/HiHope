@@ -215,7 +215,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
                     skipped += 1
 
             last_scale = float(scaler.get_scale())
-            last_lr = float(scheduler.get_last_lr()[0])
+            last_lrs = [float(x) for x in scheduler.get_last_lr()]
+            last_lr = last_lrs[0]
 
             if did_step and ema is not None:
                 ema.update(model)
@@ -230,7 +231,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
         pv_loss_sum += pvv if math.isfinite(pvv) else 0.0
 
     if report is not None:
-        report.update({
+        rep = {
             'opt_steps': opt_steps, 'skipped': skipped,
             'grad_norm': last_grad_norm,
             'scale': last_scale, 'lr': last_lr,
@@ -239,7 +240,10 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
             'pv_loss': pv_loss_sum / n_micro,
             'mod_loss': mod_loss_sum / n_micro,
             'head_loss': head_loss_sum / n_micro,
-        })
+        }
+        if len(last_lrs) > 1:
+            rep['encoder_lr'] = last_lrs[-1]
+        report.update(rep)
         if tr_mod_preds:
             m_p = torch.cat(tr_mod_preds).numpy()
             h_p = torch.cat(tr_head_preds).numpy()

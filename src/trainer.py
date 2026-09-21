@@ -345,12 +345,22 @@ class Trainer:
                     optimizer.add_param_group({
                         'params': new_encoder_params,
                         'lr': self.cfg.encoder_lr,
+                        'initial_lr': self.cfg.encoder_lr,
                         'weight_decay': self.cfg.weight_decay,
                         'tag': 'encoder'
                     })
                     self.logger.info(
                         'Preserved head optimizer states and added %d newly unfrozen parameters to optimizer.',
                         len(new_encoder_params))
+                
+                # Reset base LRs cleanly for Phase 2
+                for g in optimizer.param_groups:
+                    if g.get('tag', 'encoder') == 'head':
+                        g['lr'] = self.cfg.head_lr
+                        g['initial_lr'] = self.cfg.head_lr
+                    else:
+                        g['lr'] = self.cfg.encoder_lr
+                        g['initial_lr'] = self.cfg.encoder_lr
                 
                 remaining_steps = int(max(1, steps_per_epoch * self.cfg.lora_epochs))
                 lr_lambda = [
@@ -458,30 +468,34 @@ class Trainer:
                 rho_mean = (rho_mod + rho_head) / 2.0
 
             ovf_str = ''
+            lr_str = f"lr {diag['lr']:.2e}"
+            if 'encoder_lr' in diag:
+                lr_str += f" (enc {diag['encoder_lr']:.2e})"
+
             if pv_mask.any():
                 self.logger.info(
                     'Epoch %d/%d [%s] | Loss %.4f (nn_m %.4f / nn_h %.4f / pv %.4f) | '
                     'Train Mod ρ %.4f | Train Head ρ %.4f | Train PV ρ %.4f | Train Mean ρ %.4f | '
                     'Val Mod ρ %.4f | Val Head ρ %.4f | Val PV ρ %.4f (de %.4f / en %.4f) | Val Mean ρ %.4f | '
-                    'steps %d (skip %d) | scale %.1f | lr %.2e',
+                    'steps %d (skip %d) | scale %.1f | %s',
                     epoch + 1, self.cfg.total_epochs, phase, train_loss,
                     diag.get('nn_mod_loss', diag['mod_loss']),
                     diag.get('nn_head_loss', diag['head_loss']),
                     diag.get('pv_loss', 0.0),
                     tr_rho_m, tr_rho_h, tr_rho_pv, train_rho_mean,
                     rho_mod, rho_head, rho_pv, rho_pv_de, rho_pv_en, rho_mean,
-                    diag['opt_steps'], diag['skipped'], diag['scale'], diag['lr'])
+                    diag['opt_steps'], diag['skipped'], diag['scale'], lr_str)
             else:
                 self.logger.info(
                     'Epoch %d/%d [%s] | Loss %.4f (mod %.4f / head %.4f) | '
                     'Train Mod ρ %.4f | Train Head ρ %.4f | Train Mean ρ %.4f | '
                     'Val Mod ρ %.4f | Val Head ρ %.4f | Val Mean ρ %.4f | '
-                    'steps %d (skip %d) | scale %.1f | lr %.2e',
+                    'steps %d (skip %d) | scale %.1f | %s',
                     epoch + 1, self.cfg.total_epochs, phase, train_loss,
                     diag['mod_loss'], diag['head_loss'],
                     tr_rho_m, tr_rho_h, train_rho_mean,
                     rho_mod, rho_head, rho_mean,
-                    diag['opt_steps'], diag['skipped'], diag['scale'], diag['lr'])
+                    diag['opt_steps'], diag['skipped'], diag['scale'], lr_str)
 
             history.append({
                 'epoch': epoch + 1, 'phase': phase,

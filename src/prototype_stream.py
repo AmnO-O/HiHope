@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .model import FusionBlock
+from .fusion_block import FusionBlock
 
 
 def pool_prototype(hidden: torch.Tensor, proto_mask: torch.Tensor) -> torch.Tensor:

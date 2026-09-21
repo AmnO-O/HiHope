@@ -36,8 +36,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel
 from .constants import SCORE_MAX, SCORE_MIN
+from .fusion_block import FusionBlock
 from .heads import GaussHead
 from .lora import apply_lora, lora_parameters, merge_lora
+from .model_two_stream import TwoStreamBiEncoderModel
 
 
 # --------------------------------------------------------------------------- #
@@ -199,31 +201,6 @@ class CrossSpanAttentionBlock(nn.Module):
         # Masking nhẹ nhàng ở cuối
         return x * query_mask.unsqueeze(-1)
 
-class FusionBlock(nn.Module):
-    """Một khối Transformer Fusion đơn lẻ (Cross-Attn + FFN)"""
-    def __init__(self, hidden: int, num_heads: int, ffn_expansion: int, dropout: float):
-        super().__init__()
-        self.attn = nn.MultiheadAttention(embed_dim=hidden, num_heads=num_heads, dropout=dropout, batch_first=True)
-        self.norm1 = nn.LayerNorm(hidden)
-        self.alpha_attn = nn.Parameter(torch.ones(1))
-
-        self.ffn = nn.Sequential(
-            nn.Linear(hidden, hidden * ffn_expansion),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden * ffn_expansion, hidden),
-            nn.Dropout(dropout)
-        )
-        self.norm2 = nn.LayerNorm(hidden)
-        self.alpha_ffn = nn.Parameter(torch.ones(1))
-
-    def forward(self, q: torch.Tensor, kv_toks: torch.Tensor) -> torch.Tensor:
-        # Cross-Attention
-        attn_out, _ = self.attn(query=q, key=kv_toks, value=kv_toks)
-        x = self.norm1(q + self.alpha_attn * attn_out)
-        # FFN
-        out = self.norm2(x + self.alpha_ffn * self.ffn(x))
-        return out
 
 class SpanFusion(nn.Module):
     """Module Fusion nâng cấp hỗ trợ xếp chồng N Layer (Iterative Refinement)"""
@@ -456,9 +433,6 @@ class MMBertModel(nn.Module):
 
     def forward(self, batch, with_logits: bool = False, with_pv: bool = False):
         return self._forward_gauss(batch, with_logits, with_pv)
-
-
-from .model_two_stream import TwoStreamBiEncoderModel
 
 
 def build_model(cfg, device, load_from: Optional[str | Path] = None) -> nn.Module:
