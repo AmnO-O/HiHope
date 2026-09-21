@@ -33,6 +33,19 @@ from .prototype_stream import (
 )
 
 
+class LearnedLayerWeights(nn.Module):
+    """Softmax-normalized scalar layer weighting across extracted hidden layers."""
+
+    def __init__(self, num_layers: int):
+        super().__init__()
+        self.weights = nn.Parameter(torch.zeros(num_layers))
+
+    def forward(self, stacked_hidden: torch.Tensor) -> torch.Tensor:
+        """Args: stacked_hidden of shape [K, B, L, H]. Returns [B, L, H]."""
+        w = F.softmax(self.weights, dim=0).view(-1, 1, 1, 1)
+        return (stacked_hidden * w).sum(dim=0)
+
+
 class TwoStreamBiEncoderModel(nn.Module):
     """Two-Stream Bi-Encoder for Compositionality and Uncertainty Prediction."""
 
@@ -47,6 +60,7 @@ class TwoStreamBiEncoderModel(nn.Module):
         fusion_layers: int = 2,
         fusion_heads: int = 4,
         extract_layers: Optional[Tuple[int, ...]] = (14, 15, 16, 17, 18),
+        extract_mode: str = "mean",
     ):
         super().__init__()
         self.lm = AutoModel.from_pretrained(backbone)
@@ -54,6 +68,12 @@ class TwoStreamBiEncoderModel(nn.Module):
         self.sigma_floor = sigma_floor
         self.fusion_type = fusion_type
         self.extract_layers = extract_layers
+        self.extract_mode = extract_mode
+
+        if extract_mode == "learned" and extract_layers:
+            self.layer_agg = LearnedLayerWeights(len(extract_layers))
+        else:
+            self.layer_agg = None
 
         # Fusion: Cross-Attention Semantic Shift Transformer or Linear projection
         if fusion_type == "cross_attention":
@@ -101,20 +121,27 @@ class TwoStreamBiEncoderModel(nn.Module):
         return self.head
 
     def pred_heads(self) -> List[nn.Module]:
-        """Return the prediction heads and fusion layers for Phase 1 unfreezing."""
-        return [self.fusion, self.head]
+        """Return the prediction heads, fusion layers, and learned layer weights for Phase 1 unfreezing."""
+        modules = [self.fusion, self.head]
+        if self.layer_agg is not None:
+            modules.append(self.layer_agg)
+        return modules
 
     def _extract_hidden(self, outputs) -> torch.Tensor:
         """Extract hidden states from configured layers (e.g. upper-middle layers 14-18).
         
-        If extract_layers is specified and hidden_states are available, averages
-        the selected layer representations. Otherwise falls back to last_hidden_state.
+        If extract_layers is specified and hidden_states are available, combines
+        the selected layer representations (via learned weights or uniform mean).
+        Otherwise falls back to last_hidden_state.
         """
         if self.extract_layers and hasattr(outputs, 'hidden_states') and outputs.hidden_states is not None:
             # outputs.hidden_states has 23 entries for a 22-layer model (idx 0 is embedding)
             selected = [outputs.hidden_states[idx] for idx in self.extract_layers if idx < len(outputs.hidden_states)]
             if selected:
-                return torch.stack(selected, dim=0).mean(dim=0)
+                stacked = torch.stack(selected, dim=0)
+                if self.layer_agg is not None:
+                    return self.layer_agg(stacked)
+                return stacked.mean(dim=0)
         return outputs.last_hidden_state
 
     def pool_active_context(

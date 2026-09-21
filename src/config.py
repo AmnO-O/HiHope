@@ -120,6 +120,7 @@ class Config:
     fusion_heads: int = 4
     target_mask_prob: float = 0.0
     extract_layers: Optional[Tuple[int, ...]] = (14, 15, 16, 17, 18)
+    extract_mode: str = 'mean'
 
     # === optimization ===
     batch_size: int = 32

@@ -11,8 +11,9 @@
   "fusion_layers": 2,
   "fusion_heads": 4,
   "extract_layers": [14, 15, 16, 17, 18],
+  "extract_mode": "learned",
 
-  "target_mask_prob": 0.25,
+  "target_mask_prob": 0.0,
   "train_aux": ["en-comp-aux.tsv", "de-litnlit-aux.tsv", "en-ijcnlp-aux.tsv"],
   "aux_loss_weight": 0.5,
   "max_context_length": 256,
