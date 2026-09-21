@@ -726,7 +726,17 @@ def check_proto_stream() -> None:
     check(torch.allclose(pooled_short, torch.full((1, 8), 5.0)),
           'pool_prototype degrades safely on short sequence length < 3')
 
-    # 5. SemanticShiftFusion
+    # 4b. Anisotropy correction test (corrected_cosine_similarity)
+    from src.prototype_stream import corrected_cosine_similarity
+    # Anisotropic test: two vectors with huge shared positive offset (e.g. +100)
+    v1 = torch.tensor([[100.0, 101.0, 100.0, 99.0]])
+    v2 = torch.tensor([[100.0, 99.0, 100.0, 101.0]])
+    raw_cos = F.cosine_similarity(v1, v2, dim=-1)
+    corr_cos = corrected_cosine_similarity(v1, v2)
+    check(raw_cos.item() > 0.999, 'Raw cosine suffers from positive anisotropy cone')
+    check(corr_cos.item() < 0.0, 'Anisotropy correction properly centers and reflects true anti-correlation')
+
+    # 5. SemanticShiftFusion (Symmetrical Cross-Attention)
     H = 16
     fuse = SemanticShiftFusion(hidden_size=H, dropout=0.0)
     h_ctx = torch.randn(2, H, requires_grad=True)
@@ -736,19 +746,25 @@ def check_proto_stream() -> None:
     check(out_fuse.shape == (2, H), 'SemanticShiftFusion output shape is (B, H)')
     check(torch.isfinite(out_fuse).all(), 'SemanticShiftFusion outputs all finite values')
     check(fuse.last_cos is not None and fuse.last_cos.shape == (2,),
-          'SemanticShiftFusion records last cosine similarities')
+          'SemanticShiftFusion records last corrected cosine similarities')
+    check(fuse.last_raw_cos is not None and fuse.last_raw_cos.shape == (2,),
+          'SemanticShiftFusion records last raw cosine similarities')
 
     loss = out_fuse.sum()
     loss.backward()
     check(h_ctx.grad is not None and h_proto.grad is not None,
-          'gradients flow smoothly through SemanticShiftFusion to inputs')
+          'gradients flow smoothly through symmetrical SemanticShiftFusion to inputs')
 
-    # 6. prototype_rank_loss
+    # 6. prototype_rank_loss (Dual mode: 1D cos_sim or 2D embeddings)
     cos_sim = torch.tensor([0.9, 0.2, 0.8])
     ratings = torch.tensor([5.0, 1.0, 4.0])
     rank_loss = prototype_rank_loss(cos_sim, ratings, margin=0.2)
     check(torch.isfinite(rank_loss) and rank_loss >= 0.0,
-          'prototype_rank_loss computes valid finite ranking loss')
+          'prototype_rank_loss computes valid finite ranking loss from 1D cos_sim')
+
+    rank_loss_emb = prototype_rank_loss(h_ctx.detach(), h_proto.detach(), torch.tensor([5.0, 1.0]), margin=0.2)
+    check(torch.isfinite(rank_loss_emb) and rank_loss_emb >= 0.0,
+          'prototype_rank_loss computes valid finite ranking loss from 2D embeddings')
 
     # 7. Mock CombinedBackboneModel forward with proto_stream
     from src.model_combined import CombinedBackboneModel

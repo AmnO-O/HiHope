@@ -26,7 +26,11 @@ from transformers import AutoModel
 
 from .constants import SCORE_MAX, SCORE_MIN
 from .heads import GaussHead
-from .prototype_stream import SemanticShiftFusion, pool_prototype
+from .prototype_stream import (
+    SemanticShiftFusion,
+    corrected_cosine_similarity,
+    pool_prototype,
+)
 
 
 class TwoStreamBiEncoderModel(nn.Module):
@@ -79,6 +83,10 @@ class TwoStreamBiEncoderModel(nn.Module):
         # Cache last computed cosine and displacement magnitude for metrics/inspection
         self.last_cos_sim: Optional[torch.Tensor] = None
         self.last_displacement_norm: Optional[torch.Tensor] = None
+
+    @property
+    def shift_fuse(self) -> nn.Module:
+        return self.fusion
 
     @property
     def mod_gauss(self) -> nn.Module:
@@ -190,7 +198,7 @@ class TwoStreamBiEncoderModel(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute interaction signals, fuse representations, and predict (mu, sigma)."""
         diff = h_context - h_word
-        cos_sim = F.cosine_similarity(h_context, h_word, dim=-1, eps=1e-8).unsqueeze(-1)
+        cos_sim = corrected_cosine_similarity(h_context, h_word, eps=1e-8).unsqueeze(-1)
 
         self.last_cos_sim = cos_sim.squeeze(-1)
         self.last_displacement_norm = torch.norm(diff, p=2, dim=-1)

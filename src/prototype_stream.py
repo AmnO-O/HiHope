@@ -54,41 +54,92 @@ def pool_prototype(hidden: torch.Tensor, proto_mask: torch.Tensor) -> torch.Tens
     return (hidden * mask_float).sum(dim=1) / denom
 
 
+def corrected_cosine_similarity(
+    u: torch.Tensor, 
+    v: torch.Tensor, 
+    eps: float = 1e-8
+) -> torch.Tensor:
+    """Cosine similarity after per-vector mean-centering (anisotropy correction).
+
+    Removes the dominant shared positive direction that causes raw Transformer
+    embeddings to cluster in a narrow cone with high positive cosine similarities
+    (anisotropy). Spreads the similarity range across [-1, 1], making the margin
+    ranking loss far more effective.
+
+    Args:
+        u: First embedding tensor of shape (B, H) or (..., H).
+        v: Second embedding tensor of shape (B, H) or (..., H).
+        eps: Small epsilon for numerical stability.
+
+    Returns:
+        Tensor of shape (B,) containing corrected cosine similarities.
+    """
+    u_c = u - u.mean(dim=-1, keepdim=True)
+    v_c = v - v.mean(dim=-1, keepdim=True)
+    return F.cosine_similarity(u_c, v_c, dim=-1, eps=eps)
+
+
 class SemanticShiftFusion(nn.Module):
-    """Attention-based Cross-Fusion between Context and Prototype.
+    """Symmetrical Attention-based Cross-Fusion between Context and Prototype.
 
-    Instead of a simple flat concatenation or linear projection, treats
-    contextual pool, lexical prototype, and semantic displacement as a
-    3-token sequence with learnable role embeddings:
-        Token 0: h_ctx (in-context meaning)
-        Token 1: h_proto (out-of-context prototype meaning)
-        Token 2: h_ctx - h_proto (directional semantic displacement)
+    Compositionality assesses two complementary linguistic directions:
+        1. Context-queried shift (h_ctx -> h_proto): How much does the context
+           displace or modulate the literal prototype meaning?
+        2. Prototype-queried literality (h_proto -> h_ctx): How much of the
+           isolated literal prototype's semantics survives intact inside the context?
 
-    A Multi-Head Cross-Attention Transformer (FusionBlock) lets h_ctx dynamically
-    attend across all three tokens, discovering which subspace dimensions shift
-    or stay literal.
-
-    Residual connection with h_ctx guarantees smooth training stability from step 0.
+    Architecture:
+        - Stream A (Context Query): q_ctx = h_ctx attends over [h_ctx, h_proto, h_ctx - h_proto].
+        - Stream B (Prototype Query): q_proto = h_proto attends over [h_proto, h_ctx, h_proto - h_ctx].
+        - Symmetrical Combiner: Merges both contextualized shift and literalness
+          preservation vectors into a calibrated hidden representation.
+        - Residual Connection: Preserves h_ctx baseline with LayerNorm.
     """
 
-    def __init__(self, hidden_size: int = 768, num_layers: int = 2,
-                 num_heads: int = 4, dropout: float = 0.1):
+    def __init__(
+        self, 
+        hidden_size: int = 768, 
+        num_layers: int = 2,
+        num_heads: int = 4, 
+        dropout: float = 0.1
+    ):
         super().__init__()
         self.hidden_size = hidden_size
         heads = num_heads if (hidden_size % num_heads == 0) else 1
 
-        self.type_emb = nn.Parameter(torch.empty(3, hidden_size))
-        nn.init.normal_(self.type_emb, std=0.02)
+        # Role embeddings for Context-Queried Stream: [0: Context, 1: Prototype, 2: Forward Displacement]
+        self.ctx_type_emb = nn.Parameter(torch.empty(3, hidden_size))
+        nn.init.normal_(self.ctx_type_emb, std=0.02)
 
-        self.layers = nn.ModuleList([
+        # Role embeddings for Prototype-Queried Stream: [0: Prototype, 1: Context, 2: Reverse Displacement]
+        self.proto_type_emb = nn.Parameter(torch.empty(3, hidden_size))
+        nn.init.normal_(self.proto_type_emb, std=0.02)
+
+        # Multi-Head Cross-Attention Transformer blocks
+        n_layers = max(1, num_layers)
+        self.ctx_layers = nn.ModuleList([
             FusionBlock(hidden_size, num_heads=heads, ffn_expansion=2, dropout=dropout)
-            for _ in range(max(1, num_layers))
+            for _ in range(n_layers)
         ])
+        self.proto_layers = nn.ModuleList([
+            FusionBlock(hidden_size, num_heads=heads, ffn_expansion=2, dropout=dropout)
+            for _ in range(n_layers)
+        ])
+
+        # Symmetrical Merger combining both directional representations
+        self.combiner = nn.Sequential(
+            nn.Linear(2 * hidden_size, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
+        )
+
         self.out_norm = nn.LayerNorm(hidden_size)
         self.last_cos: Optional[torch.Tensor] = None
+        self.last_raw_cos: Optional[torch.Tensor] = None
 
     def forward(self, h_ctx: torch.Tensor, h_proto: torch.Tensor) -> torch.Tensor:
-        """Fuse contextual and prototype vectors via multi-head cross-attention.
+        """Fuse contextual and prototype vectors via symmetrical cross-attention.
 
         Args:
             h_ctx: Contextual vector of shape (B, H).
@@ -97,57 +148,86 @@ class SemanticShiftFusion(nn.Module):
         Returns:
             Fused vector of shape (B, H).
         """
-        # Record cosine similarity for ranking loss and diagnostic tracking
-        self.last_cos = F.cosine_similarity(h_ctx, h_proto, dim=-1, eps=1e-8)
+        # Anisotropy-corrected and raw cosine similarities for ranking and diagnostics
+        self.last_cos = corrected_cosine_similarity(h_ctx, h_proto)
+        self.last_raw_cos = F.cosine_similarity(h_ctx, h_proto, dim=-1, eps=1e-8)
 
-        # Token sequence: [0: Context, 1: Prototype, 2: Displacement]
-        diff = h_ctx - h_proto
-        kv = torch.stack([h_ctx, h_proto, diff], dim=1)  # (B, 3, H)
+        # --- Stream 1: Context-queried Forward Shift (h_ctx -> h_proto) ---
+        diff_fwd = h_ctx - h_proto
+        kv_ctx = torch.stack([h_ctx, h_proto, diff_fwd], dim=1)  # (B, 3, H)
         type_ids = torch.tensor([0, 1, 2], device=h_ctx.device, dtype=torch.long)
-        kv = kv + self.type_emb[type_ids].to(dtype=kv.dtype)
+        kv_ctx = kv_ctx + self.ctx_type_emb[type_ids].to(dtype=kv_ctx.dtype)
 
-        # h_ctx acts as Query attending across all three semantic roles
-        q = h_ctx.unsqueeze(1)  # (B, 1, H)
-        for layer in self.layers:
-            q = layer(q, kv)
+        q_ctx = h_ctx.unsqueeze(1)  # (B, 1, H)
+        for layer in self.ctx_layers:
+            q_ctx = layer(q_ctx, kv_ctx)
+        z_ctx = q_ctx.squeeze(1)  # (B, H)
 
-        # Residual connection with input contextual vector
-        return self.out_norm(h_ctx + q.squeeze(1))
+        # --- Stream 2: Prototype-queried Literality Survival (h_proto -> h_ctx) ---
+        diff_rev = h_proto - h_ctx
+        kv_proto = torch.stack([h_proto, h_ctx, diff_rev], dim=1)  # (B, 3, H)
+        kv_proto = kv_proto + self.proto_type_emb[type_ids].to(dtype=kv_proto.dtype)
+
+        q_proto = h_proto.unsqueeze(1)  # (B, 1, H)
+        for layer in self.proto_layers:
+            q_proto = layer(q_proto, kv_proto)
+        z_proto = q_proto.squeeze(1)  # (B, H)
+
+        # --- Symmetrical Integration with Context Residual ---
+        fused_shift = self.combiner(torch.cat([z_ctx, z_proto], dim=-1))  # (B, H)
+        return self.out_norm(h_ctx + fused_shift)
 
 
 def prototype_rank_loss(
-    cos_sim: torch.Tensor,
-    ratings: torch.Tensor,
+    cos_sim_or_h_ctx: torch.Tensor,
+    ratings_or_h_proto: torch.Tensor,
+    ratings: Optional[torch.Tensor] = None,
     margin: float = 0.2,
     mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Pairwise margin ranking loss on prototype-context cosine similarity.
+    """Pairwise margin ranking loss with anisotropy correction.
+
+    Supports either:
+        1. prototype_rank_loss(cos_sim, ratings, margin=..., mask=...)
+        2. prototype_rank_loss(h_ctx, h_proto, ratings, margin=..., mask=...)
 
     Encourages cosine similarity to correlate positively with compositionality:
-    samples with higher ratings should have higher prototype-context similarity.
+    samples with higher human ratings should have higher prototype-context similarity.
 
     Args:
-        cos_sim: Cosine similarities of shape (B,).
-        ratings: Ground truth ratings of shape (B,).
-        margin: Hinge loss margin.
+        cos_sim_or_h_ctx: Cosine similarities (B,) or context embeddings (B, H).
+        ratings_or_h_proto: Ratings (B,) or prototype embeddings (B, H).
+        ratings: Ground truth ratings if embeddings were provided as first 2 args.
+        margin: Hinge loss margin (default: 0.2).
         mask: Valid sample mask of shape (B,).
 
     Returns:
         Scalar loss tensor.
     """
+    if ratings is not None:
+        # Called as (h_ctx, h_proto, ratings, ...)
+        h_ctx = cos_sim_or_h_ctx
+        h_proto = ratings_or_h_proto
+        cos_sim = corrected_cosine_similarity(h_ctx, h_proto)
+        target_ratings = ratings
+    else:
+        # Called as (cos_sim, ratings, ...)
+        cos_sim = cos_sim_or_h_ctx
+        target_ratings = ratings_or_h_proto
+
     if mask is not None:
         cos_sim = cos_sim[mask]
-        ratings = ratings[mask]
+        target_ratings = target_ratings[mask]
 
-    valid = torch.isfinite(ratings)
+    valid = torch.isfinite(target_ratings)
     cos_sim = cos_sim[valid]
-    ratings = ratings[valid]
+    target_ratings = target_ratings[valid]
 
     n = cos_sim.size(0)
     if n < 2:
         return cos_sim.sum() * 0.0
 
-    target_diff = ratings[:, None] - ratings[None, :]
+    target_diff = target_ratings[:, None] - target_ratings[None, :]
     cos_diff = cos_sim[:, None] - cos_sim[None, :]
 
     pos_mask = target_diff > 0.5  # Only compare pairs with meaningful score gap

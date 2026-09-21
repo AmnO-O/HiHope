@@ -39,18 +39,20 @@ Using character offset alignments, the subwords corresponding to the target cons
 $$h_{\text{context}} = \frac{\sum_{i=1}^L m_i \cdot H_{\text{ctx}, i}}{\sum_{i=1}^L m_i} \in \mathbb{R}^{H}$$
 
 ### Semantic Interaction & Directional Displacement
-The interaction between context and prototype captures whether the word retains its literal sense or undergoes idiomatic drift:
-1. **Directional Semantic Displacement:**
-   $$\Delta h = h_{\text{context}} - h_{\text{word}} \in \mathbb{R}^{H}$$
-2. **Multiplicative Constituent Interaction:**
-   $$h_{\text{prod}} = h_{\text{context}} \odot h_{\text{word}} \in \mathbb{R}^{H}$$
-3. **Calibrated Cosine Similarity:**
-   $$\cos\_sim = \frac{h_{\text{context}} \cdot h_{\text{word}}}{\|h_{\text{context}}\|_2 \|h_{\text{word}}\|_2} \in [-1, 1]$$
+The interaction between context and prototype captures both how context shifts the word and how much literal meaning survives:
+1. **Symmetrical Cross-Attention:**
+   - **Context-Queried Stream ($h_{\text{ctx}} \to h_{\text{proto}}$):** Measures directional displacement $\Delta h_{\text{fwd}} = h_{\text{context}} - h_{\text{word}}$ across dynamic sub-dimensions.
+   - **Prototype-Queried Stream ($h_{\text{proto}} \to h_{\text{ctx}}$):** Measures literalness preservation $\Delta h_{\text{rev}} = h_{\text{word}} - h_{\text{context}}$.
+   - **Symmetrical Combiner:** Projects concatenated directional representations back into a calibrated hidden representation with LayerNorm and residual connection to $h_{\text{context}}$.
+2. **Anisotropy-Corrected Cosine Similarity:**
+   - Mitigates raw Transformer representation anisotropy (clustering in a narrow positive cone) by mean-centering vectors prior to cosine similarity:
+     $$u_c = u - \bar{u}, \quad v_c = v - \bar{v}$$
+     $$\cos\_sim_{\text{corr}} = \frac{u_c \cdot v_c}{\|u_c\|_2 \|v_c\|_2} \in [-1, 1]$$
+   - Powers the contrastive margin ranking loss ($\mathcal{L}_{\text{rank}}$) with uncompressed margin gradients.
 
 ### Fusion & Calibrated Uncertainty Prediction
-The features are concatenated into a unified interaction vector of dimension $4H + 1 = 3073$:
-$$z = \text{GELU}\left(\text{LayerNorm}\left(W_f [h_{\text{context}}; h_{\text{word}}; \Delta h; h_{\text{prod}}; \cos\_sim] + b_f\right)\right) \in \mathbb{R}^{H}$$
-$$(\mu, \sigma) = \text{GaussHead}(z)$$
+The fused representation flows into the Gaussian prediction head:
+$$(\mu, \sigma) = \text{GaussHead}(z_{\text{fused}})$$
 where:
 - $\mu \in [0.0, 5.0]$: Central degree of compositionality (literalness).
 - $\sigma \ge 0.05$: Modeled annotator disagreement variance ($\text{softplus}(\cdot) + \text{floor}$).
