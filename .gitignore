@@ -10,15 +10,16 @@ venv/
 
 # Data (mounted separately on Kaggle via the Compartment dataset input)
 dataset/*
-# built NCTTI aux + scored rows (committed on purpose)
-!dataset/nctti_en.tsv
-!dataset/nctti_en_scored.tsv
 trial/
 
 # Upstream NCTTI repo clone (ukWaC-derived sentences; do not redistribute).
 # Only the BUILT aux file dataset/nctti_en.tsv is committed; regenerate with
 # tools/build_nctti_aux.py.
 nctti/
+
+# Cordeiro et al. 2019 lemma-level compositionality dataset (EN/FR/PT).
+# Downloaded for reference only; not part of the competition data or pipeline.
+comp-datasets-release-v2/
 
 # Run artifacts
 output/

@@ -354,6 +354,20 @@ def check_data() -> None:
     check(0.0 <= rows_nctti[0]['mod_avg'] <= 5.0 and rows_nctti[0]['mod_std'] > 0,
           'nctti scored Avg in [0,5] with finite Std')
 
+    rows_comp = _df_to_rows(read_tsv('dataset/en-comp-aux.tsv'), 'en-comp-aux', 'en')
+    check(len(rows_comp) == 570 and all(r['is_pv'] is False for r in rows_comp)
+          and all(r['has_label'] for r in rows_comp),
+          f'en-comp-aux: {len(rows_comp)} NN-schema labeled rows')
+    check(all(0.0 <= r['mod_avg'] <= 5.0 and 0.0 <= r['head_avg'] <= 5.0
+              for r in rows_comp),
+          'en-comp-aux mod/head Avg in [0,5]')
+    comp_aligned = sum(
+        1 for r in rows_comp
+        if r['compound'].lower() in r['context'].lower()
+    )
+    check(comp_aligned == len(rows_comp),
+          f'en-comp-aux compound verbatim in context {comp_aligned}/{len(rows_comp)}')
+
     # MLM warmup data pieces must be gone
     data_src = (ROOT / 'src' / 'data.py').read_text(encoding='utf-8')
     check('def MlmDataset' not in data_src and 'def collate_mlm' not in data_src
