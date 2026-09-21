@@ -13,6 +13,7 @@
   "train_aux": [],
   "max_context_length": 256,
   "dropout": 0.5,
+  "head_hidden" : 64,
 
   "freeze_epochs": 30,
   "lora_epochs": 0,
