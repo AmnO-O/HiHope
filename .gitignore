@@ -31,6 +31,11 @@ pv_litnlit/
 CLLSfinalrelease/
 ijcnlp_compositionality_data/
 
+# McCarthy/Keller/Carroll 2003 phrasal-verb compositionality gold standard:
+# verb-level scores ONLY (no context sentences), so it cannot feed the
+# pipeline. Reference / scale-sanity check only.
+McCarthyGS/
+
 # Run artifacts
 output/
 *.pt
