@@ -1,5 +1,4 @@
 {
-  "_comment": "Full Extended Frozen-Backbone Training Config with Decoupled Heads and Balanced Auxiliaries",
   "mode": "train80",
   "backbone": "jhu-clsp/mmBERT-base",
   "model_backend": "twostream",
