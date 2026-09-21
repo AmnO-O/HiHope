@@ -32,7 +32,7 @@
   "amp_growth_interval": 256,
   "patience": 8,
   "ema_decay": 0.999,
-  "kl_weight" : 0,
+  "kl_weight" : 1,
   "ccc_weight": 0.6,
   "ccc_var_floor": 0.05,
   "bin_sigma": 0.5,
