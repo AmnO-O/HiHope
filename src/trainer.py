@@ -338,19 +338,29 @@ class Trainer:
                 aux_loss_weight=getattr(self.cfg, 'aux_loss_weight', 1.0),
             )
 
-            # Compute train rho directly from in-epoch predictions
-            single_target = 'train_preds' in diag and len(diag.get('train_preds', ())) == 9
+            # Compute train rho directly from in-epoch predictions on CORE rows (~is_aux)
+            # to provide an apples-to-apples comparison with Val rho
             if 'train_preds' in diag:
-                if single_target:
-                    tr_m, tr_h, tr_p, tr_my, tr_hy, tr_py, tr_al, tr_is_pv, tr_tgt = diag['train_preds']
-                    tr_al_m = tr_al & (tr_tgt == 0)
-                    tr_al_h = tr_al & (tr_tgt == 1)
-                    tr_al_p = tr_al & (tr_tgt == 2)
-                else:
-                    tr_m, tr_h, tr_p, tr_my, tr_hy, tr_py, tr_al, tr_is_pv = diag['train_preds']
+                preds_tuple = diag['train_preds']
+                if len(preds_tuple) == 10:
+                    tr_m, tr_h, tr_p, tr_my, tr_hy, tr_py, tr_al, tr_is_pv, tr_is_aux, tr_tgt = preds_tuple
+                    tr_core = ~tr_is_aux.astype(bool)
+                    tr_al_m = tr_al & (tr_tgt == 0) & tr_core
+                    tr_al_h = tr_al & (tr_tgt == 1) & tr_core
+                    tr_al_p = tr_al & (tr_tgt == 2) & tr_core
+                elif len(preds_tuple) == 9:
+                    tr_m, tr_h, tr_p, tr_my, tr_hy, tr_py, tr_al, tr_is_pv, tr_is_aux = preds_tuple
+                    tr_is_pv = tr_is_pv.astype(bool)
+                    tr_core = ~tr_is_aux.astype(bool)
+                    tr_al_m = tr_al_h = tr_al & (~tr_is_pv) & tr_core
+                    tr_al_p = tr_al & tr_is_pv & tr_core
+                elif len(preds_tuple) == 8:
+                    tr_m, tr_h, tr_p, tr_my, tr_hy, tr_py, tr_al, tr_is_pv = preds_tuple
                     tr_is_pv = tr_is_pv.astype(bool)
                     tr_al_m = tr_al_h = tr_al & (~tr_is_pv)
                     tr_al_p = tr_al & tr_is_pv
+                else:
+                    tr_al_m = tr_al_h = tr_al_p = np.array([False])
                 tr_rho_m = _safe_rho(tr_my[tr_al_m], tr_m[tr_al_m]) if tr_al_m.any() else 0.0
                 tr_rho_h = _safe_rho(tr_hy[tr_al_h], tr_h[tr_al_h]) if tr_al_h.any() else 0.0
                 tr_rho_pv = _safe_rho(tr_py[tr_al_p], tr_p[tr_al_p]) if tr_al_p.any() else 0.0

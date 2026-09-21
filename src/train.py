@@ -64,7 +64,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
 
     tr_mod_preds, tr_head_preds, tr_pv_preds = [], [], []
     tr_mod_targets, tr_head_targets, tr_pv_label = [], [], []
-    tr_allowed, tr_is_pv = [], []
+    tr_allowed, tr_is_pv, tr_is_aux = [], [], []
     tr_targets = []
 
     for step_idx, batch in enumerate(dataloader, 1):
@@ -178,6 +178,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
         tr_pv_label.append(batch['mod_avg'].cpu())   # PV reports on the compound Avg
         tr_allowed.append(allowed.cpu())
         tr_is_pv.append(is_pv.cpu())
+        tr_is_aux.append(batch.get('is_aux', torch.zeros_like(allowed, dtype=torch.bool)).cpu())
         if 'target' in batch:
             tr_targets.append(batch['target'].cpu())
 
@@ -248,11 +249,12 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
             py = torch.cat(tr_pv_label).numpy()
             al = torch.cat(tr_allowed).numpy()
             ip = torch.cat(tr_is_pv).numpy()
+            ia = torch.cat(tr_is_aux).numpy()
             if tr_targets:
                 t_t = torch.cat(tr_targets).numpy()
-                report['train_preds'] = (m_p, h_p, p_p, m_y, h_y, py, al, ip, t_t)
+                report['train_preds'] = (m_p, h_p, p_p, m_y, h_y, py, al, ip, ia, t_t)
             else:
-                report['train_preds'] = (m_p, h_p, p_p, m_y, h_y, py, al, ip)
+                report['train_preds'] = (m_p, h_p, p_p, m_y, h_y, py, al, ip, ia)
     return total_loss / n_micro
 
 
