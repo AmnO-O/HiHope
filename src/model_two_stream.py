@@ -112,18 +112,34 @@ class TwoStreamBiEncoderModel(nn.Module):
     def pool_active_context(
         self,
         hidden_states: torch.Tensor,
-        target_mask: torch.Tensor
+        target_mask: torch.Tensor,
+        fallback_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Masked-mean pooling over the target constituent subwords in context.
-        
+
+        Rows whose target span could not be aligned (all-false ``target_mask``)
+        fall back to whole-sentence pooling over ``fallback_mask`` (the context
+        ``attention_mask``) instead of an empty mean, so an unaligned row still
+        contributes its overall-context representation rather than being
+        silently dropped.
+
         Args:
             hidden_states: [B, L, H] from Stream 2 (context forward pass).
             target_mask: [B, L] binary indicator of target subwords.
-            
+            fallback_mask: [B, L] binary mask used when target_mask is empty.
+
         Returns:
             [B, H] in-context constituent representation h_context.
         """
         mask = target_mask.unsqueeze(-1).float()
+        has_span = mask.sum(dim=1) > 0.0
+        if fallback_mask is not None:
+            fb = fallback_mask.unsqueeze(-1).float()
+            mask = torch.where(
+                has_span.unsqueeze(-1),
+                mask,
+                fb,
+            )
         denom = mask.sum(dim=1).clamp(min=1.0)
         return (hidden_states * mask).sum(dim=1) / denom
 
@@ -151,6 +167,7 @@ class TwoStreamBiEncoderModel(nn.Module):
         ctx_input_ids: torch.Tensor,
         ctx_attention_mask: torch.Tensor,
         target_mask: torch.Tensor,
+        fallback_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Stream 2: Encode the full context sentence.
         
@@ -164,7 +181,7 @@ class TwoStreamBiEncoderModel(nn.Module):
             return_dict=True,
         )
         hidden = self._extract_hidden(outputs)
-        return self.pool_active_context(hidden, target_mask)
+        return self.pool_active_context(hidden, target_mask, fallback_mask)
 
     def _forward_pair(
         self,
@@ -213,7 +230,8 @@ class TwoStreamBiEncoderModel(nn.Module):
         # 1. Direct explicit Two-Stream API (Tensors passed as positional args)
         if isinstance(ctx_input_ids, torch.Tensor) and word_input_ids is not None:
             h_word = self.forward_stream_word(word_input_ids, word_attention_mask)
-            h_context = self.forward_stream_context(ctx_input_ids, ctx_attention_mask, target_mask)
+            h_context = self.forward_stream_context(
+                ctx_input_ids, ctx_attention_mask, target_mask, ctx_attention_mask)
             mu, sigma = self._forward_pair(h_context, h_word)
             if not self.training:
                 mu = mu.clamp(SCORE_MIN, SCORE_MAX)
@@ -243,9 +261,9 @@ class TwoStreamBiEncoderModel(nn.Module):
         )
         ctx_hidden = self._extract_hidden(ctx_outputs)
 
-        h_ctx_mod = self.pool_active_context(ctx_hidden, mod_span_mask)
-        h_ctx_head = self.pool_active_context(ctx_hidden, head_span_mask)
-        h_ctx_pv = self.pool_active_context(ctx_hidden, pv_span_mask)
+        h_ctx_mod = self.pool_active_context(ctx_hidden, mod_span_mask, attention_mask)
+        h_ctx_head = self.pool_active_context(ctx_hidden, head_span_mask, attention_mask)
+        h_ctx_pv = self.pool_active_context(ctx_hidden, pv_span_mask, attention_mask)
 
         # Single-target mode check (batch has 'target' and 'proto_ids')
         if 'target' in batch and 'proto_ids' in batch:

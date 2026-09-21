@@ -1,8 +1,11 @@
 """Training primitives for the gauss-only pipeline.
 
-  * ``allowed`` row mask = has_label & has_mod & has_head & ~degenerate, so
-    unaligned (missing span) and German-collapsed (mod==head token) rows are
-    never fed to span-based supervised loss terms.
+  * ``allowed`` row mask = has_label only. Every labeled row trains:
+    span-pooled rows use their aligned constituent; degenerate German fused
+    compounds (mod/head on ONE token -- the whole compound word) pool that
+    position's vector for both roles, and unaligned (missing-span) rows fall
+    back to whole-sentence pooling in ``pool_active_context``. In all cases
+    the mod/head split is carried by the Stream-1 prototype.
   * ``unfreeze_top_layers`` walks the encoder generically and skips
     ``.linear.`` paths so LoRA base weights stay frozen.
 """
@@ -66,8 +69,12 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
     for step_idx, batch in enumerate(dataloader, 1):
         batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
 
-        allowed = (batch['has_label'] & batch['has_mod'] & batch['has_head']
-                   & ~batch['degenerate'])
+        # Degenerate rows (fused German compound = one token; mod and head share
+        # that position's vector, which IS the whole compound word) and unaligned
+        # rows (whole-sentence fallback in pool_active_context) both train: the
+        # mod/head distinction still reaches the model through the prototype
+        # stream (Stream 1). Only rows without labels are excluded.
+        allowed = batch['has_label']
         is_pv = batch.get('is_pv', torch.zeros_like(allowed))
         allowed_nn = allowed & (~is_pv)
         allowed_pv = allowed & is_pv

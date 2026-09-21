@@ -790,6 +790,27 @@ def check_proto_stream() -> None:
         dummy_loss.backward()
         p_has_grad = any(p.grad is not None for p in model.shift_fuse.parameters())
         check(p_has_grad, 'gradients flow backward into shift_fuse parameters')
+
+        # 8. pool_active_context falls back to whole-sentence pooling when the
+        #    target span could not be aligned (all-false mask) instead of an
+        #    empty mean. row0 aligned span 1:3, row1 unaligned (fallback),
+        #    row2 aligned span 4:6.
+        from src.model_two_stream import TwoStreamBiEncoderModel
+        ts = TwoStreamBiEncoderModel(backbone='dummy', hidden_size=4, extract_layers=None)
+        hidden = torch.randn(3, 6, 4)
+        attn = torch.ones(3, 6, dtype=torch.long)
+        spans = torch.zeros(3, 6, dtype=torch.bool)
+        spans[0, 1:3] = True
+        spans[2, 4:6] = True
+        pooled = ts.pool_active_context(hidden, spans, attn)
+        check(torch.allclose(pooled[0], hidden[0, 1:3].mean(dim=0)),
+              'pool_active_context: aligned row keeps span mean')
+        check(torch.allclose(pooled[1], hidden[1].mean(dim=0)),
+              'pool_active_context: unaligned row falls back to whole-sentence mean')
+        check(not torch.allclose(pooled[1], torch.zeros(4)),
+              'pool_active_context: fallback is the sentence mean, not the zero vector')
+        check(torch.allclose(pooled[2], hidden[2, 4:6].mean(dim=0)),
+              'pool_active_context: second aligned row keeps span mean')
     finally:
         transformers.AutoModel.from_pretrained = orig_from_pretrained
 

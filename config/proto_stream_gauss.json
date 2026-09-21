@@ -8,8 +8,8 @@
   "fusion_type": "cross_attention",
   "fusion_layers": 1,
   "fusion_heads": 4,
-  "extract_layers": [15, 16, 17, 18],
-  "targets" : ["mod"],
+  "extract_layers": [14, 15, 16, 17, 18],
+
   "target_mask_prob": 0.25,
   "train_aux": [],
   "max_context_length": 256,
@@ -19,10 +19,6 @@
   "lora_epochs": 0,
   "lora_targets": [],
   "lora_rank": 0,
-
-  "de_nn_train": "",
-  "en_pv_train" : "",
-  "de_pv_train" : "",
 
   "batch_size": 128,
   "accum_steps": 1,

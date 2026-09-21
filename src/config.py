@@ -67,10 +67,10 @@ class Config:
     en_pv_train: str = 'en-pv-train.tsv'
     de_pv_train: str = 'de-pv-train.tsv'          # German PV joins the mix by default
     #                                (trennbare Verben, e.g. abhauen; mod=verb, head=particle).
-    #                                _match_german_pv locates 100% of spans; ~65% of rows are
-    #                                non-degenerate (particle detached) and reach supervised
-    #                                losses, the fused one-token rows ("abgehauen") stay masked
-    #                                (representation-only). Turn off with --set de_pv_train=.
+    #                                _match_german_pv locates 100% of spans; the fused one-token
+    #                                rows ("abgehauen", mod and head on the same token) pool that
+    #                                position's vector for both roles and still train via the
+    #                                prototype stream. Turn off with --set de_pv_train=.
 
     # Extra train-only TSVs (e.g. NCTTI) loaded alongside the train files. Rows
     # get is_aux=True so the compound-level 80/20 split never selects them for

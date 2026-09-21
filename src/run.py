@@ -134,7 +134,7 @@ def _smoke(logger: logging.Logger, device_str: str) -> None:
     device_type = 'cuda' if device.type == 'cuda' else 'cpu'
     with torch.amp.autocast(device_type, enabled=(device.type == 'cuda')):
         mod_pred, head_pred, mod_logits, head_logits = model(batch, with_logits=True)
-        allowed = batch['has_label'] & batch['has_mod'] & batch['has_head'] & ~batch['degenerate']
+        allowed = batch['has_label']
         loss = (
             criterion(mod_pred, batch['mod_avg'], mod_logits, batch['mod_std'],
                       mask=allowed)

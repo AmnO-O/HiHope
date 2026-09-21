@@ -15,8 +15,9 @@ Handled cases:
   - English plural / 3rd-person / possessive head inflection
     ("watch" -> "watches" / "watch's").
   - German closed compounds where mod+head collapse onto the SAME token
-    (``degenerate=True``): the caller skips span-supervised losses for that
-    row instead of feeding duplicate mod==head span embeddings.
+    (``degenerate=True``): both roles pool that single position (the whole
+    fused compound word); the mod/head distinction is carried by the Stream-1
+    prototype rather than by separate in-context spans.
 
 Matching is deliberately conservative: an unaligned row returns
 ``Span(None, None)`` and the dataset skips the affected supervision rather

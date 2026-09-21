@@ -7,10 +7,12 @@ token spans. No ``<mod>`` / ``<head>`` markers are inserted, so the pretrained
 mmBERT tokenizer/embeddings never see out-of-vocabulary artifacts.
 
 ``CompDataset`` -- one row per labeled / aux sentence, for scoring. Yields
-span masks plus (possibly NaN) soft labels; aux and unaligned rows keep the
-row but mark ``has_label`` / ``has_mod`` / ``has_head`` False so losses can
-mask them. Rows pre-tokenize and pre-align in the constructor (deterministic,
-single pass), which also surfaces a per-source alignment report.
+span masks plus (possibly NaN) soft labels; aux and unlabeled rows keep the
+row but mark ``has_label`` False so losses can mask them. Rows whose span
+cannot be aligned still train: the model falls back to whole-sentence pooling
+for those positions. Rows pre-tokenize and pre-align in the constructor
+(deterministic, single pass), which also surfaces a per-source alignment
+report.
 """
 
 from __future__ import annotations
