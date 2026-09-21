@@ -42,7 +42,8 @@ def track_optimizer_steps(optimizer) -> None:
 
 def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, device,
                 grad_clip=1.0, accum_steps=1, report=None, ema=None,
-                proto_rank_loss_weight=0.0, proto_margin=0.2):
+                proto_rank_loss_weight=0.0, proto_margin=0.2,
+                aux_loss_weight=1.0):
     """One scoring epoch with AMP + gradient accumulation + clipping.
 
     Returns the mean supervised loss of the epoch.
@@ -96,6 +97,14 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
 
             mod_logits = head_logits = pv_logits = None
 
+            # aux rows act as weak regularization: scale their supervised loss
+            # contribution by aux_loss_weight (default 1.0 -> unchanged).
+            aux_w = torch.where(
+                batch.get('is_aux', torch.zeros_like(allowed)),
+                torch.full_like(allowed, max(float(aux_loss_weight), 1e-3), dtype=allowed.dtype),
+                torch.ones_like(allowed, dtype=allowed.dtype),
+            )
+
             if requires_logits:
                 (mod_pred, head_pred, pv_pred, mod_logits, head_logits, pv_logits) = model(
                     batch, with_logits=True, with_pv=True)
@@ -105,11 +114,11 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
             # NN loss (mask=allowed on NN rows)
             mod_loss = criterion(
                 mod_pred, batch['mod_avg'], mod_logits, batch['mod_std'],
-                mask=mod_mask,
+                mask=mod_mask, weight=aux_w,
             )
             head_loss = criterion(
                 head_pred, batch['head_avg'], head_logits, batch['head_std'],
-                mask=head_mask,
+                mask=head_mask, weight=aux_w,
             )
 
             # PV has only an overall Avg/Std label. Its dedicated composition
@@ -117,7 +126,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
             # receive PV supervision.
             pv_loss = criterion(
                 pv_pred, batch['mod_avg'], pv_logits, batch['mod_std'],
-                mask=pv_mask,
+                mask=pv_mask, weight=aux_w,
             )
 
             loss = mod_loss + head_loss + pv_loss

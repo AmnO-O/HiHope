@@ -331,6 +331,7 @@ class Trainer:
                 ema=ema,
                 proto_rank_loss_weight=getattr(self.cfg, 'proto_rank_loss', 0.0),
                 proto_margin=getattr(self.cfg, 'proto_margin', 0.2),
+                aux_loss_weight=getattr(self.cfg, 'aux_loss_weight', 1.0),
             )
 
             # Compute train rho directly from in-epoch predictions
@@ -390,6 +391,14 @@ class Trainer:
 
             rho_pv = _safe_rho(val_mod_y[pv_mask], val_pv[pv_mask]) if pv_mask.any() else 0.0
 
+            # Per-language PV rho for the aux ablation: de-pv comes from the
+            # competition dev split, en-pv from Cordeiro/NCTTI/litnlit aux.
+            lang_arr = np.array([str(r.get('lang', '')) for r in self._val_rows])
+            de_pv_mask = pv_mask & (lang_arr == 'de')
+            en_pv_mask = pv_mask & (lang_arr == 'en')
+            rho_pv_de = _safe_rho(val_mod_y[de_pv_mask], val_pv[de_pv_mask]) if de_pv_mask.any() else 0.0
+            rho_pv_en = _safe_rho(val_mod_y[en_pv_mask], val_pv[en_pv_mask]) if en_pv_mask.any() else 0.0
+
             if pv_mask.any() and nn_mask.any():
                 rho_mean = (rho_mod + rho_head + rho_pv) / 3.0
             elif pv_mask.any():
@@ -402,14 +411,14 @@ class Trainer:
                 self.logger.info(
                     'Epoch %d/%d [%s] | Loss %.4f (nn_m %.4f / nn_h %.4f / pv %.4f) | '
                     'Train Mod ρ %.4f | Train Head ρ %.4f | Train PV ρ %.4f | Train Mean ρ %.4f | '
-                    'Val Mod ρ %.4f | Val Head ρ %.4f | Val PV ρ %.4f | Val Mean ρ %.4f | '
+                    'Val Mod ρ %.4f | Val Head ρ %.4f | Val PV ρ %.4f (de %.4f / en %.4f) | Val Mean ρ %.4f | '
                     'steps %d (skip %d) | scale %.1f | lr %.2e',
                     epoch + 1, self.cfg.total_epochs, phase, train_loss,
                     diag.get('nn_mod_loss', diag['mod_loss']),
                     diag.get('nn_head_loss', diag['head_loss']),
                     diag.get('pv_loss', 0.0),
                     tr_rho_m, tr_rho_h, tr_rho_pv, train_rho_mean,
-                    rho_mod, rho_head, rho_pv, rho_mean,
+                    rho_mod, rho_head, rho_pv, rho_pv_de, rho_pv_en, rho_mean,
                     diag['opt_steps'], diag['skipped'], diag['scale'], diag['lr'])
             else:
                 self.logger.info(
@@ -435,6 +444,7 @@ class Trainer:
                 'train_rho_mean': round(train_rho_mean, 5),
                 'rho_mod': round(rho_mod, 5), 'rho_head': round(rho_head, 5),
                 'rho_pv': round(rho_pv, 5),
+                'rho_pv_de': round(rho_pv_de, 5), 'rho_pv_en': round(rho_pv_en, 5),
                 'rho_mean': round(rho_mean, 5),
                 'opt_steps': diag['opt_steps'], 'skipped': diag['skipped'],
                 'grad_norm': round(diag['grad_norm'], 4),

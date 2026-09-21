@@ -369,6 +369,7 @@ class CompDataset(_DatasetBase):
             'head_std': torch.tensor(float(r['head_std']), dtype=torch.float),
             'row_id': torch.tensor(int(r.get('row_id', 0)), dtype=torch.long),
             'is_pv': torch.tensor(bool(r.get('is_pv', False)), dtype=torch.bool),
+            'is_aux': torch.tensor(bool(r.get('is_aux', False)), dtype=torch.bool),
         }
         if self.proto_stream:
             # Stream 1: Tokenize isolated constituent words for prototype representations

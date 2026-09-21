@@ -24,14 +24,19 @@ _SIGMA_FLOOR = 0.05
 # gaussian distribution loss
 # --------------------------------------------------------------------------- #
 def gauss_kl(mu_p: torch.Tensor, sigma_p: torch.Tensor,
-             target: torch.Tensor, sigma_t: torch.Tensor) -> torch.Tensor:
-    """Closed-form KL(N(mu_p, sigma_p^2) || N(target, sigma_t^2)), element-wise mean."""
+             target: torch.Tensor, sigma_t: torch.Tensor,
+             w: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """Closed-form KL(N(mu_p, sigma_p^2) || N(target, sigma_t^2)), weighted mean."""
     mu_p = mu_p.float()
     sigma_p = sigma_p.float().clamp(min=_SIGMA_FLOOR)
     target = target.float()
     sigma_t = sigma_t.float().clamp(min=_SIGMA_FLOOR)
     expect = (sigma_p ** 2 + (mu_p - target) ** 2) / (2 * sigma_t ** 2)
-    return ((sigma_t / sigma_p).log() + expect - 0.5).mean()
+    kl = (sigma_t / sigma_p).log() + expect - 0.5
+    if w is not None:
+        w = w.float().to(kl.device)
+        return (kl * w).sum() / w.sum().clamp(min=1e-8)
+    return kl.mean()
 
 
 def _target_sigma(std: Optional[torch.Tensor], bin_sigma: float) -> torch.Tensor:
@@ -79,7 +84,8 @@ class GaussLoss(nn.Module):
     def forward(self, pred: torch.Tensor, target: torch.Tensor,
                 logits: Optional[torch.Tensor] = None,
                 std: Optional[torch.Tensor] = None,
-                mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+                mask: Optional[torch.Tensor] = None,
+                weight: Optional[torch.Tensor] = None) -> torch.Tensor:
         if mask is not None:
             mask = mask.to(pred.device)
             if not mask.any():
@@ -91,6 +97,12 @@ class GaussLoss(nn.Module):
             target = target[mask]
             logits = logits[mask] if logits is not None else None
             std = std[mask] if std is not None else None
+        if weight is not None:
+            weight = weight.float().to(pred.device)
+            if mask is not None:
+                weight = weight[mask]
+            if weight.numel() and not weight.any():  # all down-weighted -> zero loss
+                return pred.sum() * 0.0
 
         mu = pred.float()
         sigma_p = logits.float() if logits is not None else torch.full_like(mu, self.bin_sigma)
@@ -99,7 +111,8 @@ class GaussLoss(nn.Module):
         else:
             sigma_t = torch.full_like(mu, float(self.bin_sigma))
 
-        loss = self.kl_weight * gauss_kl(mu, sigma_p, target, sigma_t)
+        loss = self.kl_weight * gauss_kl(mu, sigma_p, target, sigma_t, w=weight)
         if self.ccc_weight > 0:
-            loss = loss + self.ccc_weight * ccc_loss(mu, target, var_floor=self.ccc_var_floor)
+            loss = loss + self.ccc_weight * ccc_loss(mu, target, w=weight,
+                                                     var_floor=self.ccc_var_floor)
         return loss

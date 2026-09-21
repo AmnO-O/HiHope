@@ -368,6 +368,17 @@ def check_data() -> None:
     check(comp_aligned == len(rows_comp),
           f'en-comp-aux compound verbatim in context {comp_aligned}/{len(rows_comp)}')
 
+    rows_litnlit = _df_to_rows(read_tsv('dataset/de-litnlit-aux.tsv'), 'de-litnlit-aux', 'de')
+    check(len(rows_litnlit) == 5862 and all(r['is_pv'] for r in rows_litnlit)
+          and all(r['has_label'] for r in rows_litnlit),
+          f'de-litnlit-aux: {len(rows_litnlit)} PV-schema labeled rows')
+    check(all(0.0 <= r['mod_avg'] <= 5.0 for r in rows_litnlit)
+          and all(r['mod_std'] >= 0.0 for r in rows_litnlit),
+          'de-litnlit-aux Avg in [0,5] with non-negative Std')
+    check(len({r['mod'] for r in rows_litnlit}) > 0
+          and all(r['mod'].strip() and r['head'].strip() for r in rows_litnlit),
+          'de-litnlit-aux Base/Particle non-empty')
+
     # MLM warmup data pieces must be gone
     data_src = (ROOT / 'src' / 'data.py').read_text(encoding='utf-8')
     check('def MlmDataset' not in data_src and 'def collate_mlm' not in data_src

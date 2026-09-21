@@ -77,6 +77,11 @@ class Config:
     # the holdout. Must satisfy _is_nn (Compound/Mod/Head) or _is_pv
     # (ParticleVerb/Base/Particle) schema; label columns optional.
     train_aux: List[str] = field(default_factory=list)
+    # Scale factor on the supervised loss of aux rows (is_aux=True). Values in
+    # (0, 1) treat external resources (NCTTI / Cordeiro / litnlit) as weak
+    # regularization instead of letting them dictate the primary distribution;
+    # 1.0 = no down-weighting. Applied per-row inside GaussLoss.
+    aux_loss_weight: float = 1.0
 
     # Multi-task Trial Datasets (EN / DE)
     en_nn_trial: str = 'en-nn-trial.tsv'

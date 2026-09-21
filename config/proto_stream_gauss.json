@@ -11,7 +11,8 @@
   "extract_layers": [14, 15, 16, 17, 18],
 
   "target_mask_prob": 0.25,
-  "train_aux": ["en-comp-aux.tsv"],
+  "train_aux": ["en-comp-aux.tsv", "nctti_en_scored.tsv", "de-litnlit-aux.tsv"],
+  "aux_loss_weight": 0.5,
   "max_context_length": 256,
   "dropout": 0.4,
 
