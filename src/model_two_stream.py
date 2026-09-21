@@ -92,13 +92,26 @@ class TwoStreamBiEncoderModel(nn.Module):
                 nn.Dropout(dropout),
             )
 
-        # Single unified GaussHead predicting (mu, sigma)
-        self.head = GaussHead(
+        # Dedicated per-task GaussHeads predicting (mu, sigma)
+        self.mod_head = GaussHead(
             in_features=hidden_size,
             hidden=head_hidden,
             dropout=dropout,
             floor=sigma_floor,
         )
+        self.head_head = GaussHead(
+            in_features=hidden_size,
+            hidden=head_hidden,
+            dropout=dropout,
+            floor=sigma_floor,
+        )
+        self.pv_head = GaussHead(
+            in_features=hidden_size,
+            hidden=head_hidden,
+            dropout=dropout,
+            floor=sigma_floor,
+        )
+        self.head = self.mod_head  # fallback reference
 
         # Cache last computed cosine and displacement magnitude for metrics/inspection
         self.last_cos_sim: Optional[torch.Tensor] = None
@@ -110,19 +123,19 @@ class TwoStreamBiEncoderModel(nn.Module):
 
     @property
     def mod_gauss(self) -> nn.Module:
-        return self.head
+        return self.mod_head
 
     @property
     def head_gauss(self) -> nn.Module:
-        return self.head
+        return self.head_head
 
     @property
     def pv_gauss(self) -> nn.Module:
-        return self.head
+        return self.pv_head
 
     def pred_heads(self) -> List[nn.Module]:
         """Return the prediction heads, fusion layers, and learned layer weights for Phase 1 unfreezing."""
-        modules = [self.fusion, self.head]
+        modules = [self.fusion, self.mod_head, self.head_head, self.pv_head]
         if self.layer_agg is not None:
             modules.append(self.layer_agg)
         return modules
@@ -222,6 +235,7 @@ class TwoStreamBiEncoderModel(nn.Module):
         self,
         h_context: torch.Tensor,
         h_word: torch.Tensor,
+        task_head: Optional[nn.Module] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute interaction signals, fuse representations, and predict (mu, sigma)."""
         diff = h_context - h_word
@@ -237,7 +251,8 @@ class TwoStreamBiEncoderModel(nn.Module):
             combined = torch.cat([h_context, h_word, diff, prod, cos_sim], dim=-1)
             fused = self.fusion(combined)
 
-        mu, sigma = self.head(fused)
+        head_module = task_head if task_head is not None else self.mod_head
+        mu, sigma = head_module(fused)
         return mu, sigma
 
     def _get_prototype_from_emb(
@@ -313,14 +328,13 @@ class TwoStreamBiEncoderModel(nn.Module):
             h_word = pool_prototype(self._extract_hidden(proto_outputs), proto_mask)
 
             tgt = batch['target']
-            # Select active context according to target (0: mod, 1: head, 2: pv)
-            h_ctx = torch.where(
-                (tgt == 0).unsqueeze(-1),
-                h_ctx_mod,
-                torch.where((tgt == 1).unsqueeze(-1), h_ctx_head, h_ctx_pv)
-            )
+            m_mu, m_sig = self._forward_pair(h_ctx_mod, h_word, self.mod_head)
+            h_mu, h_sig = self._forward_pair(h_ctx_head, h_word, self.head_head)
+            p_mu, p_sig = self._forward_pair(h_ctx_pv, h_word, self.pv_head)
 
-            mu, sigma = self._forward_pair(h_ctx, h_word)
+            mu = torch.where((tgt == 0), m_mu, torch.where((tgt == 1), h_mu, p_mu))
+            sigma = torch.where((tgt == 0), m_sig, torch.where((tgt == 1), h_sig, p_sig))
+
             if not self.training:
                 mu = mu.clamp(SCORE_MIN, SCORE_MAX)
 
@@ -372,13 +386,13 @@ class TwoStreamBiEncoderModel(nn.Module):
                 h_proto_head = self._get_prototype_from_emb(input_ids, head_span_mask)
                 h_proto_pv = 0.5 * (h_proto_mod + h_proto_head)
 
-            mod_mu, mod_sigma = self._forward_pair(h_ctx_mod, h_proto_mod)
+            mod_mu, mod_sigma = self._forward_pair(h_ctx_mod, h_proto_mod, self.mod_head)
             self.last_mod_cos = getattr(self, 'last_cos_sim', None)
 
-            head_mu, head_sigma = self._forward_pair(h_ctx_head, h_proto_head)
+            head_mu, head_sigma = self._forward_pair(h_ctx_head, h_proto_head, self.head_head)
             self.last_head_cos = getattr(self, 'last_cos_sim', None)
 
-            pv_mu, pv_sigma = self._forward_pair(h_ctx_pv, h_proto_pv)
+            pv_mu, pv_sigma = self._forward_pair(h_ctx_pv, h_proto_pv, self.pv_head)
             self.last_pv_cos = getattr(self, 'last_cos_sim', None)
 
             if not self.training:
