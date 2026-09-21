@@ -20,6 +20,8 @@
   "lora_targets": [],
   "lora_rank": 0,
 
+  "de_nn_train": "",
+
   "batch_size": 128,
   "accum_steps": 1,
   "num_workers": 0,
