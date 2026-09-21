@@ -8,7 +8,7 @@
   "proto_rank_loss": 0.15,
   "proto_margin": 0.2,
   "fusion_type": "cross_attention",
-  "fusion_layers": 1,
+  "fusion_layers": 2,
   "fusion_heads": 4,
   "extract_layers": [14, 15, 16, 17, 18],
 
@@ -16,7 +16,7 @@
   "train_aux": ["en-comp-aux.tsv", "de-litnlit-aux.tsv", "en-ijcnlp-aux.tsv"],
   "aux_loss_weight": 0.5,
   "max_context_length": 256,
-  "dropout": 0.4,
+  "dropout": 0.3,
 
   "freeze_epochs": 30,
   "lora_epochs": 0,
