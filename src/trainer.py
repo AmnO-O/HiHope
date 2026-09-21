@@ -333,16 +333,33 @@ class Trainer:
                     f', top layers from {self.cfg.unfreeze_from_layer}' if self.cfg.unfreeze_from_layer > 0 else '',
                     epoch + 1)
                 
-                # Giải phóng optimizer & scheduler cũ để tránh đọng VRAM
-                del optimizer, scheduler
-                gc.collect()
-                if self.device.type == 'cuda':
-                    torch.cuda.empty_cache()
-                    
                 self._unfreeze_phase2(model, adapters)
-                optimizer, scheduler = self._optimizer(
-                    model, adapters, phase=2,
-                    steps=steps_per_epoch * self.cfg.lora_epochs)
+                
+                # Preserve existing head optimizer state and add newly unfrozen LoRA/encoder parameters
+                existing_pids = {id(p) for g in optimizer.param_groups for p in g['params']}
+                new_encoder_params = [
+                    p for n, p in model.named_parameters()
+                    if p.requires_grad and id(p) not in existing_pids
+                ]
+                if new_encoder_params:
+                    optimizer.add_param_group({
+                        'params': new_encoder_params,
+                        'lr': self.cfg.encoder_lr,
+                        'weight_decay': self.cfg.weight_decay,
+                        'tag': 'encoder'
+                    })
+                    self.logger.info(
+                        'Preserved head optimizer states and added %d newly unfrozen parameters to optimizer.',
+                        len(new_encoder_params))
+                
+                remaining_steps = int(max(1, steps_per_epoch * self.cfg.lora_epochs))
+                lr_lambda = [
+                    (lambda step: 1.0)
+                    if g.get('tag', 'encoder') == 'head'
+                    else (lambda step: max(0.0, 1.0 - step / remaining_steps))
+                    for g in optimizer.param_groups
+                ]
+                scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
                 no_improve_epochs = 0   # fresh patience window for the LoRA phase
 
             phase = 'FROZEN' if epoch < self.cfg.freeze_epochs else 'UNFROZEN-TOP'
