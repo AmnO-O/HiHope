@@ -66,8 +66,10 @@ class GaussLoss(nn.Module):
 
     def __init__(self, ccc_weight: float = 0.7,
                  ccc_var_floor: float = 0.05,
-                 bin_sigma: float = 0.5, use_label_std: bool = True):
+                 bin_sigma: float = 0.5, use_label_std: bool = True,
+                 kl_weight: float = 1.0):
         super().__init__()
+        self.kl_weight = kl_weight
         self.ccc_weight = ccc_weight
         self.ccc_var_floor = ccc_var_floor
         self.bin_sigma = bin_sigma
@@ -97,7 +99,7 @@ class GaussLoss(nn.Module):
         else:
             sigma_t = torch.full_like(mu, float(self.bin_sigma))
 
-        loss = gauss_kl(mu, sigma_p, target, sigma_t)
+        loss = self.kl_weight * gauss_kl(mu, sigma_p, target, sigma_t)
         if self.ccc_weight > 0:
             loss = loss + self.ccc_weight * ccc_loss(mu, target, var_floor=self.ccc_var_floor)
         return loss

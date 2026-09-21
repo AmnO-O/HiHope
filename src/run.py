@@ -123,7 +123,7 @@ def _smoke(logger: logging.Logger, device_str: str) -> None:
     # 4a. GaussLoss + forward/backward
     loader = DataLoader(ds, batch_size=4, shuffle=False, collate_fn=collate_comp)
     criterion = GaussLoss(bin_sigma=cfg.bin_sigma, use_label_std=cfg.use_label_std,
-                          ccc_var_floor=cfg.ccc_var_floor)
+                          ccc_var_floor=cfg.ccc_var_floor, kl_weight=cfg.kl_weight)
     assert criterion.requires_logits
     opt = AdamW([p for p in model.parameters() if p.requires_grad], lr=cfg.head_lr)
     opt.zero_grad()

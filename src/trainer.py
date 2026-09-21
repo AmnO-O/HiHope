@@ -290,6 +290,7 @@ class Trainer:
             ccc_weight=self.cfg.ccc_weight,
             ccc_var_floor=self.cfg.ccc_var_floor,
             bin_sigma=self.cfg.bin_sigma, use_label_std=self.cfg.use_label_std,
+            kl_weight=self.cfg.kl_weight,
         ).to(self.device)
 
         best_rho, best_epoch, no_improve_epochs = -float('inf'), -1, 0

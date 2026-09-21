@@ -133,6 +133,7 @@ class Config:
     ema_decay: float = 0.0
 
     # === losses ===
+    kl_weight: float = 1.0
     ccc_weight: float = 0.7
     ccc_var_floor: float = 0.05
     bin_sigma: float = 0.5
