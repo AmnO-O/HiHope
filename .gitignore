@@ -36,6 +36,11 @@ ijcnlp_compositionality_data/
 # pipeline. Reference / scale-sanity check only.
 McCarthyGS/
 
+# ComposiGen (LREC-2026) noun-noun compositionality: compound-level modifier/head
+# ratings WITHOUT context sentences -> cannot feed the pipeline. Strong NN-scale
+# validator (Spearman 0.72 mod / 0.60 head on the 157 overlapping compounds).
+ComposiGen/
+
 # Run artifacts
 output/
 *.pt
