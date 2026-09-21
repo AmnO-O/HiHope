@@ -399,10 +399,13 @@ class CompDataset(_DatasetBase):
 
             lang = str(r.get('lang', 'en')).lower()
 
-            def _tok_word(w: str, target_is_pv: bool = False):
+            def _tok_word(w: str, target_is_pv: bool = False,
+                          target_is_verb: bool = False, target_is_particle: bool = False):
                 if w and hasattr(self.tokenizer, '__call__'):
                     text = format_prototype_text(
-                        w, lang=lang, is_pv=target_is_pv, mode=self.proto_mode
+                        w, lang=lang, is_pv=target_is_pv,
+                        is_verb=target_is_verb, is_particle=target_is_particle,
+                        mode=self.proto_mode
                     )
                     p = self.tokenizer(
                         text, max_length=self.max_proto_length, truncation=True, return_tensors='pt'
@@ -415,8 +418,8 @@ class CompDataset(_DatasetBase):
             item['proto_mask'] = p_mask
 
             # Provide explicit separate prototypes for joint multi-target mode
-            m_ids, m_mask = _tok_word(mod_word, target_is_pv=False)
-            h_ids, h_mask = _tok_word(head_word, target_is_pv=False)
+            m_ids, m_mask = _tok_word(mod_word, target_is_pv=False, target_is_verb=is_pv)
+            h_ids, h_mask = _tok_word(head_word, target_is_pv=False, target_is_particle=is_pv)
             item['mod_proto_ids'] = m_ids
             item['mod_proto_mask'] = m_mask
             item['head_proto_ids'] = h_ids

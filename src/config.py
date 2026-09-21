@@ -111,7 +111,7 @@ class Config:
 
     # === two-stream prototype representation (lexical vs contextual) ===
     proto_stream: bool = False
-    proto_mode: str = 'hybrid'
+    proto_mode: str = 'template'
     max_proto_length: int = 32
     proto_rank_loss: float = 0.0
     proto_margin: float = 0.2

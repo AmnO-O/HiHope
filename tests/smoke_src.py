@@ -739,6 +739,10 @@ def check_proto_stream() -> None:
     tmpl_de_pv = get_canonical_template('aufgeben', lang='de', is_pv=True)
     check("Die wörtliche Handlung, aufgeben." == tmpl_de_pv,
           'Canonical template formats German particle verb correctly')
+    tmpl_verb = get_canonical_template('hauen', lang='de', is_verb=True)
+    check("Das Verb 'hauen'." == tmpl_verb, 'Canonical template formats German verb constituent correctly')
+    tmpl_part = get_canonical_template('ab', lang='de', is_particle=True)
+    check("Die Partikel 'ab'." == tmpl_part, 'Canonical template formats German particle constituent correctly')
 
     fmt_raw = format_prototype_text('flea', mode='raw')
     check(fmt_raw == 'flea', 'format_prototype_text with mode=raw returns bare word')
