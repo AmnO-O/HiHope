@@ -379,6 +379,16 @@ def check_data() -> None:
           and all(r['mod'].strip() and r['head'].strip() for r in rows_litnlit),
           'de-litnlit-aux Base/Particle non-empty')
 
+    rows_ijcnlp = _df_to_rows(read_tsv('dataset/en-ijcnlp-aux.tsv'), 'en-ijcnlp-aux', 'en')
+    check(len(rows_ijcnlp) == 445 and all(r['is_pv'] is False for r in rows_ijcnlp)
+          and all(r['has_label'] for r in rows_ijcnlp),
+          f'en-ijcnlp-aux: {len(rows_ijcnlp)} NN-schema labeled rows')
+    check(all(0.0 <= r['mod_avg'] <= 5.0 and 0.0 <= r['head_avg'] <= 5.0
+              for r in rows_ijcnlp),
+          'en-ijcnlp-aux mod/head Avg in [0,5]')
+    check(len({(r['mod'], r['head']) for r in rows_ijcnlp}) == 89,
+          'en-ijcnlp-aux 89 unique compounds')
+
     # MLM warmup data pieces must be gone
     data_src = (ROOT / 'src' / 'data.py').read_text(encoding='utf-8')
     check('def MlmDataset' not in data_src and 'def collate_mlm' not in data_src
