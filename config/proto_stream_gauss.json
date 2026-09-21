@@ -13,7 +13,7 @@
   "target_mask_prob": 0.25,
   "train_aux": ["en-comp-aux.tsv"],
   "max_context_length": 256,
-  "dropout": 0.25,
+  "dropout": 0.4,
 
   "freeze_epochs": 30,
   "lora_epochs": 0,
