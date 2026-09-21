@@ -237,15 +237,35 @@ class Trainer:
         groups = self._param_groups(model, adapters, phase)
         optimizer = AdamW(groups)
         track_optimizer_steps(optimizer)
+        n_steps = int(max(1, steps))
         if phase == 1:
-            scheduler = get_constant_schedule(optimizer)
+            sched_type = getattr(self.cfg, 'head_lr_schedule', 'constant')
+            min_ratio = float(getattr(self.cfg, 'head_lr_min_ratio', 0.1))
+            warmup_steps = int(n_steps * float(getattr(self.cfg, 'warmup_ratio', 0.0)))
+            if sched_type == 'cosine':
+                def lr_lambda_fn(step):
+                    if step < warmup_steps:
+                        return float(step) / float(max(1, warmup_steps))
+                    progress = float(step - warmup_steps) / float(max(1, n_steps - warmup_steps))
+                    progress = min(max(progress, 0.0), 1.0)
+                    return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
+                scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda_fn)
+            elif sched_type == 'linear':
+                def lr_lambda_fn(step):
+                    if step < warmup_steps:
+                        return float(step) / float(max(1, warmup_steps))
+                    progress = float(step - warmup_steps) / float(max(1, n_steps - warmup_steps))
+                    progress = min(max(progress, 0.0), 1.0)
+                    return min_ratio + (1.0 - min_ratio) * (1.0 - progress)
+                scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda_fn)
+            else:
+                scheduler = get_constant_schedule(optimizer)
         else:
             # Decouple the LR schedules in phase 2: LoRA/encoder anneals to 0
             # while the heads keep fitting at head_lr. Annealing the head group
             # too lets the encoder drift the features underneath a head that can
             # no longer update -- train ρ collapses and the run flat-lines
             # (underfit / feature drift).
-            n_steps = int(max(1, steps))
             lr_lambda = [
                 (lambda step: 1.0)
                 if g.get('tag', 'encoder') == 'head'

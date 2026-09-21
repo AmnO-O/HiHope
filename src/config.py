@@ -126,6 +126,9 @@ class Config:
     batch_size: int = 32
     accum_steps: int = 1
     head_lr: float = 1e-4
+    head_lr_schedule: str = 'constant'  # 'constant', 'cosine', 'linear'
+    head_lr_min_ratio: float = 0.1      # min_lr = head_lr * head_lr_min_ratio
+    warmup_ratio: float = 0.0           # linear warmup fraction of total steps
     encoder_lr: float = 8e-6
     embedding_lr: float = 0.0      # 0 = frozen (mmBERT embedding table is ~197M)
     weight_decay: float = 0.05
