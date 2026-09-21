@@ -111,7 +111,6 @@ class TwoStreamBiEncoderModel(nn.Module):
             dropout=dropout,
             floor=sigma_floor,
         )
-        self.head = self.mod_head  # fallback reference
 
         # Cache last computed cosine and displacement magnitude for metrics/inspection
         self.last_cos_sim: Optional[torch.Tensor] = None
@@ -329,11 +328,23 @@ class TwoStreamBiEncoderModel(nn.Module):
 
             tgt = batch['target']
             m_mu, m_sig = self._forward_pair(h_ctx_mod, h_word, self.mod_head)
+            m_cos = self.last_cos_sim
             h_mu, h_sig = self._forward_pair(h_ctx_head, h_word, self.head_head)
+            h_cos = self.last_cos_sim
             p_mu, p_sig = self._forward_pair(h_ctx_pv, h_word, self.pv_head)
+            p_cos = self.last_cos_sim
 
             mu = torch.where((tgt == 0), m_mu, torch.where((tgt == 1), h_mu, p_mu))
             sigma = torch.where((tgt == 0), m_sig, torch.where((tgt == 1), h_sig, p_sig))
+
+            # Each _forward_pair overwrites last_cos_sim (last-write-wins = pv),
+            # so rebuild the row-correct cos SIMILARITY for the rank loss.
+            cos_sim = torch.where(
+                (tgt == 0), m_cos, torch.where((tgt == 1), h_cos, p_cos))
+            self.last_cos_sim = cos_sim
+            self.last_mod_cos = m_cos
+            self.last_head_cos = h_cos
+            self.last_pv_cos = p_cos
 
             if not self.training:
                 mu = mu.clamp(SCORE_MIN, SCORE_MAX)
