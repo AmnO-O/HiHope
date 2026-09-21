@@ -1,5 +1,4 @@
 {
-  "_comment": "Full End-to-End Warm-LoRA Two-Stream Training Config with Decoupled Heads and Balanced Auxiliaries",
   "mode": "train80",
   "backbone": "jhu-clsp/mmBERT-base",
   "model_backend": "twostream",
