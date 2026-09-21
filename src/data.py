@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from .marks import Span, SpanResult, find_spans
+from .prototype_prompt import format_prototype_text
 from .targets import TARGETS, target_code
 from .utils import get_logger
 
@@ -317,13 +318,17 @@ class CompDataset(_DatasetBase):
 
     def __init__(self, rows: List[Dict], tokenizer, max_len: int = 256,
                  is_test: bool = False, proto_stream: bool = False,
-                 target_mask_prob: float = 0.0):
+                 target_mask_prob: float = 0.0,
+                 proto_mode: str = "hybrid",
+                 max_proto_length: int = 32):
         self.rows = rows
         self.tokenizer = tokenizer
         self.max_len = max_len
         self.is_test = is_test
         self.proto_stream = proto_stream
         self.target_mask_prob = float(target_mask_prob)
+        self.proto_mode = proto_mode
+        self.max_proto_length = int(max_proto_length)
         self.mask_token_id = getattr(tokenizer, 'mask_token_id', None)
         if self.mask_token_id is None and hasattr(tokenizer, 'convert_tokens_to_ids'):
             try:
@@ -392,19 +397,26 @@ class CompDataset(_DatasetBase):
             else:
                 word = mod_word or compound_word
 
-            def _tok_word(w: str):
+            lang = str(r.get('lang', 'en')).lower()
+
+            def _tok_word(w: str, target_is_pv: bool = False):
                 if w and hasattr(self.tokenizer, '__call__'):
-                    p = self.tokenizer(w, max_length=16, truncation=True, return_tensors='pt')
+                    text = format_prototype_text(
+                        w, lang=lang, is_pv=target_is_pv, mode=self.proto_mode
+                    )
+                    p = self.tokenizer(
+                        text, max_length=self.max_proto_length, truncation=True, return_tensors='pt'
+                    )
                     return p['input_ids'].squeeze(0), p['attention_mask'].squeeze(0)
                 return torch.zeros(1, dtype=input_ids.dtype), torch.zeros(1, dtype=attention_mask.dtype)
 
-            p_ids, p_mask = _tok_word(word)
+            p_ids, p_mask = _tok_word(word, target_is_pv=(t == 'pv' or is_pv))
             item['proto_ids'] = p_ids
             item['proto_mask'] = p_mask
 
             # Provide explicit separate prototypes for joint multi-target mode
-            m_ids, m_mask = _tok_word(mod_word)
-            h_ids, h_mask = _tok_word(head_word)
+            m_ids, m_mask = _tok_word(mod_word, target_is_pv=False)
+            h_ids, h_mask = _tok_word(head_word, target_is_pv=False)
             item['mod_proto_ids'] = m_ids
             item['mod_proto_mask'] = m_mask
             item['head_proto_ids'] = h_ids

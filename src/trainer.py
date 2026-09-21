@@ -127,11 +127,15 @@ class Trainer:
         train_ds = CompDataset(
             train_rows, tokenizer, max_len=self.cfg.max_context_length,
             proto_stream=self.cfg.proto_stream,
-            target_mask_prob=getattr(self.cfg, 'target_mask_prob', 0.0))
+            target_mask_prob=getattr(self.cfg, 'target_mask_prob', 0.0),
+            proto_mode=getattr(self.cfg, 'proto_mode', 'hybrid'),
+            max_proto_length=getattr(self.cfg, 'max_proto_length', 32))
         val_ds = CompDataset(
             val_rows, tokenizer, max_len=self.cfg.max_context_length,
             proto_stream=self.cfg.proto_stream,
-            target_mask_prob=0.0)
+            target_mask_prob=0.0,
+            proto_mode=getattr(self.cfg, 'proto_mode', 'hybrid'),
+            max_proto_length=getattr(self.cfg, 'max_proto_length', 32))
         
         # Chỉ bật persistent_workers khi num_workers > 0 để tránh deadlock
         num_workers = max(0, self.cfg.num_workers)

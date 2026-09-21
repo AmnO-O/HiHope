@@ -725,6 +725,27 @@ def check_proto_stream() -> None:
     check(batch['proto_ids'].shape == (2, 4), 'collate_comp stacks and pads proto_ids')
     check(batch['proto_mask'].shape == (2, 4), 'collate_comp stacks and pads proto_mask')
 
+    # 3b. Prototype Prompting & Gloss Enrichment (Techniques 1 & 3)
+    from src.prototype_prompt import format_prototype_text, get_canonical_template
+    tmpl_en = get_canonical_template('flea', lang='en', is_pv=False)
+    check("The literal definition of the noun 'flea'." == tmpl_en,
+          'Canonical template formats English noun correctly')
+    tmpl_de = get_canonical_template('Handschuh', lang='de', is_pv=False)
+    check("Die wörtliche Bedeutung des Nomens 'Handschuh'." == tmpl_de,
+          'Canonical template formats German noun correctly')
+    tmpl_pv = get_canonical_template('pull up', lang='en', is_pv=True)
+    check("The physical action to pull up." == tmpl_pv,
+          'Canonical template formats particle verb correctly')
+    tmpl_de_pv = get_canonical_template('aufgeben', lang='de', is_pv=True)
+    check("Die wörtliche Handlung, aufgeben." == tmpl_de_pv,
+          'Canonical template formats German particle verb correctly')
+
+    fmt_raw = format_prototype_text('flea', mode='raw')
+    check(fmt_raw == 'flea', 'format_prototype_text with mode=raw returns bare word')
+    fmt_hybrid = format_prototype_text('flea', lang='en', mode='hybrid')
+    check(len(fmt_hybrid) > 0 and 'flea' in fmt_hybrid,
+          'format_prototype_text with mode=hybrid produces valid enriched string')
+
     # 4. pool_prototype excludes CLS and SEP on sequences >= 3
     # Hidden state shape: (B=2, L=4, H=8)
     hidden_proto = torch.zeros(2, 4, 8)

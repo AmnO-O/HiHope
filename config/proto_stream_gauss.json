@@ -3,6 +3,8 @@
   "backbone": "jhu-clsp/mmBERT-base",
   "model_backend": "twostream",
   "proto_stream": true,
+  "proto_mode": "hybrid",
+  "max_proto_length": 32,
   "proto_rank_loss": 0.15,
   "proto_margin": 0.2,
   "fusion_type": "cross_attention",
