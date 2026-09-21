@@ -484,6 +484,12 @@ class Trainer:
                 if ema is not None:
                     ema.apply_to(model)
                 torch.save(model.state_dict(), ckpt_path)
+                layer_agg = getattr(model, 'layer_agg', None)
+                if layer_agg is not None:
+                    w = torch.softmax(layer_agg.weights, dim=0).detach().cpu().numpy()
+                    layers = self.cfg.extract_layers or tuple(range(len(w)))
+                    w_str = ', '.join(f'L{l}:{v:.3f}' for l, v in zip(layers, w))
+                    self.logger.info('Learned Layer Weights at Best Epoch %d: [%s]', epoch + 1, w_str)
                 if ema is not None:
                     ema.restore(model)
             else:
