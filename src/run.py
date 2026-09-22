@@ -54,7 +54,7 @@ def _build_config(args) -> Config:
             if not k.strip():
                 raise ValueError(f'--set empty key in {s!r}')
             cfg_dict[k.strip()] = coerce_value(k.strip(), v)
-    return Config(**cfg_dict)
+    return Config.from_dict(cfg_dict, strict=True)
 
 
 def _lock_device(device_str: str | None) -> str:

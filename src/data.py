@@ -98,14 +98,17 @@ def _df_to_rows(df: pd.DataFrame, tag: str, lang: str) -> List[Dict]:
         mod_std = val('ModStd' if nn else 'Std')
         head_std = val('HeadStd' if nn else 'Std')
 
+        ctx = r['Context']
+        ctx_str = str(ctx) if (ctx is not None and pd.notna(ctx)) else ''
+
         rows.append({
-            'context': str(r['Context']),
-            'mod': str(mod),
-            'head': str(head),
-            'compound': str(compound),
+            'context': ctx_str,
+            'mod': str(mod) if (mod is not None and pd.notna(mod)) else '',
+            'head': str(head) if (head is not None and pd.notna(head)) else '',
+            'compound': str(compound) if (compound is not None and pd.notna(compound)) else '',
             'lang': lang,
             'is_pv': pv,
-            'has_label': bool(np.isfinite(mod_avg)),
+            'has_label': bool(np.isfinite(mod_avg) or np.isfinite(head_avg)),
             'mod_avg': mod_avg,
             'head_avg': head_avg,
             'mod_std': mod_std,
@@ -351,7 +354,8 @@ class CompDataset(_DatasetBase):
         length = input_ids.size(0)
 
         result: SpanResult = find_spans(
-            r['context'], offsets, r['mod'], r['head'], r.get('compound', '')
+            r['context'], offsets, r['mod'], r['head'], r.get('compound', ''),
+            is_pv=r.get('is_pv', False)
         ) if (r['mod'] and r['head']) \
             else SpanResult(Span(None, None), Span(None, None), found=False)
 

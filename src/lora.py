@@ -62,10 +62,10 @@ def _linear_is(module: nn.Module) -> bool:
 
 
 def _layer_idx(full: str) -> Optional[int]:
-    """Index of the transformer layer in a dotted path, e.g. ``layers.14`` -> 14."""
+    """Index of the transformer layer in a dotted path, e.g. ``layers.14`` or ``layer.14`` -> 14."""
     segs = full.split('.')
     for i, s in enumerate(segs[:-1]):
-        if s == 'layers' and segs[i + 1].isdigit():
+        if s in ('layers', 'layer') and segs[i + 1].isdigit():
             return int(segs[i + 1])
     return None
 

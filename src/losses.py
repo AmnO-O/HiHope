@@ -16,8 +16,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# floor of predicted sigma in gauss_kl matches the GaussHead floor (heads.py)
-_SIGMA_FLOOR = 0.05
+from src.heads import SIGMA_FLOOR
+
+_SIGMA_FLOOR = SIGMA_FLOOR
 
 
 # --------------------------------------------------------------------------- #

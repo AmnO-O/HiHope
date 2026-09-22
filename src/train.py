@@ -216,7 +216,16 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
 
             last_scale = float(scaler.get_scale())
             last_lrs = [float(x) for x in scheduler.get_last_lr()]
-            last_lr = last_lrs[0]
+            # Extract head and encoder LRs by group tag
+            head_lr_val, enc_lr_val = None, None
+            for idx, g in enumerate(optimizer.param_groups):
+                tag = g.get('tag', 'encoder')
+                lr_val = last_lrs[idx] if idx < len(last_lrs) else float(g['lr'])
+                if tag == 'head':
+                    head_lr_val = lr_val
+                elif tag == 'encoder':
+                    enc_lr_val = lr_val
+            last_lr = head_lr_val if head_lr_val is not None else (last_lrs[0] if last_lrs else 0.0)
 
             if did_step and ema is not None:
                 ema.update(model)
@@ -241,8 +250,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
             'mod_loss': mod_loss_sum / n_micro,
             'head_loss': head_loss_sum / n_micro,
         }
-        if len(last_lrs) > 1:
-            rep['encoder_lr'] = last_lrs[-1]
+        if enc_lr_val is not None:
+            rep['encoder_lr'] = enc_lr_val
         report.update(rep)
         if tr_mod_preds:
             m_p = torch.cat(tr_mod_preds).numpy()

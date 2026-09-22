@@ -3,8 +3,10 @@ from __future__ import annotations
 from src.model_two_stream import (
     TwoStreamBiEncoderModel,
     TwoStreamBiEncoderModel as CombinedBackboneModel,
-    build_two_stream_model,
-    build_two_stream_model as build_combined_model,
+)
+from src.model import (
+    build_model as build_two_stream_model,
+    build_model as build_combined_model,
 )
 
 __all__ = [

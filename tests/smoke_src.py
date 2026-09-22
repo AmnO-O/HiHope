@@ -614,12 +614,12 @@ def check_targets() -> None:
           and "pv_mask = allowed_pv & (tgt == 2)" in t_src,
           'train_epoch gates mod/head/pv losses by per-row target')
 
-    # model routing: inactive heads are zeroed (source guard in model_combined)
-    m_src = (ROOT / 'src' / 'model_combined.py').read_text(encoding='utf-8')
-    check('torch.where(select(' in m_src
-          and 'target_selector(targets, t)' in m_src
-          and 'torch.zeros_like' in m_src,
-          'CombinedBackboneModel zeroes inactive-head predictions via torch.where')
+    # model routing & fusion (source guard in model_two_stream)
+    m_src = (ROOT / 'src' / 'model_two_stream.py').read_text(encoding='utf-8')
+    check('TwoStreamBiEncoderModel' in m_src
+          and 'GaussHead' in m_src
+          and 'SemanticShiftFusion' in m_src,
+          'TwoStreamBiEncoderModel defines canonical TwoStream architecture with GaussHead')
 
     # collate stacks the scalar target key
     d_src = (ROOT / 'src' / 'data.py').read_text(encoding='utf-8')
@@ -628,35 +628,21 @@ def check_targets() -> None:
     check("'target'" in d_src.replace(' ', '') and 'torch.stack' in d_src,
           'collate_comp stacks scalar keys (incl. target)')
 
-    # model: single shared GaussHead (mod/head/pv_gauss all alias the same module)
-    check("self.gauss = GaussHead(self.head_in, head_hidden, dropout=dropout)" in m_src
-          and "object.__setattr__(self, 'mod_gauss', self.gauss)" in m_src
-          and "object.__setattr__(self, 'head_gauss', self.gauss)" in m_src
-          and "object.__setattr__(self, 'pv_gauss', self.gauss)" in m_src,
-          'CombinedBackboneModel shares ONE GaussHead across all targets')
+    # model: decoupled or shared GaussHead per task
+    check("self._head_mod = GaussHead" in m_src
+          and "self._head_head = GaussHead" in m_src
+          and "self._head_pv = GaussHead" in m_src,
+          'TwoStreamBiEncoderModel defines GaussHead prediction modules')
 
-    # single-pass routing: one pool + one shared-head call for the whole batch
-    check("pool = pool_active(hidden, batch, targets)" in m_src
-          and "mu, sigma = self.gauss(pool)" in m_src,
-          'fast path pools each row OWN span once and runs the shared head once')
+    # fusion initialization in TwoStreamBiEncoderModel
+    check("self.fusion = SemanticShiftFusion(" in m_src,
+          'TwoStreamBiEncoderModel initializes SemanticShiftFusion')
 
-    # build_combined_model forwards proto_stream; shift_fuse exists only then
-    check("proto_stream=bool(getattr(cfg, 'proto_stream', False))" in m_src,
-          'build_combined_model forwards proto_stream from cfg')
-    check("self.shift_fuse = SemanticShiftFusion(hidden_size, dropout=dropout) if proto_stream else None" in m_src,
-          'CombinedBackboneModel builds SemanticShiftFusion only when proto_stream=True')
-    check("if self.proto_stream and h_proto is not None:" in m_src,
-          'proto_stream fuses the pooled context via shift_fuse before the shared head')
-
-    # trainer wires proto_stream into both datasets + folds shift_fuse into the head group
+    # trainer wires proto_stream into both datasets + folds heads and fusion
     check("proto_stream=self.cfg.proto_stream" in tr_src,
           'trainer passes proto_stream to both CompDatasets')
-    check("shift = getattr(model, 'shift_fuse', None)" in tr_src
-          and "heads.append(shift)" in tr_src,
-          'trainer._pred_heads folds shift_fuse into the head_lr group')
-    check("seen = set()" in tr_src
-          and "if id(m) not in seen:" in tr_src,
-          'trainer._pred_heads dedupes shared-head aliases by module identity')
+    check("pred_heads" in tr_src,
+          'trainer groups prediction heads and fusion modules into head_lr group')
 
 
 def check_proto_stream() -> None:
@@ -835,9 +821,9 @@ def check_proto_stream() -> None:
     transformers.AutoModel.from_pretrained = lambda *args, **kwargs: DummyLM()
     try:
         model = CombinedBackboneModel(
-            backbone='dummy', hidden_size=16, proto_stream=True
+            backbone='dummy', hidden_size=16, extract_layers=None
         )
-        check(model.shift_fuse is not None, 'CombinedBackboneModel initializes shift_fuse when proto_stream=True')
+        check(model.fusion is not None, 'TwoStreamBiEncoderModel initializes fusion (SemanticShiftFusion)')
 
         # Run forward
         batch_mock = {
@@ -859,13 +845,13 @@ def check_proto_stream() -> None:
 
         preds = model(batch_mock, with_logits=True, with_pv=True)
         mod_p, head_p, pv_p, mod_s, head_s, pv_s = preds
-        check(mod_p.shape == (2,) and mod_s.shape == (2,), 'CombinedBackboneModel proto_stream forward shapes valid')
+        check(mod_p.shape == (2,) and mod_s.shape == (2,), 'TwoStreamBiEncoderModel forward shapes valid')
         check(torch.isfinite(mod_p).all() and torch.isfinite(mod_s).all(), 'Forward outputs are finite')
 
         dummy_loss = mod_p.sum() + mod_s.sum()
         dummy_loss.backward()
-        p_has_grad = any(p.grad is not None for p in model.shift_fuse.parameters())
-        check(p_has_grad, 'gradients flow backward into shift_fuse parameters')
+        p_has_grad = any(p.grad is not None for p in model.fusion.parameters())
+        check(p_has_grad, 'gradients flow backward into fusion parameters')
 
         # 8. pool_active_context falls back to whole-sentence pooling when the
         #    target span could not be aligned (all-false mask) instead of an

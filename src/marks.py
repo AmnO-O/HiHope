@@ -184,34 +184,36 @@ def _alternate_forms(base: str) -> Tuple[str, ...]:
         return tuple(dict.fromkeys(out))
 
     last = t[-1]
-    def doubles() -> bool:
-        # w and x never double in English (draw -> drew, fix -> fixed).
-        return (len(t) >= 3 and last not in "aeiouwyx"
-                and t[-2] in "aeiou" and t[-3] not in "aeiou")
-
+    # Suffix -s/-es/-ies
     if last in "sxz" or t.endswith(("ch", "sh", "o")):
         out.append(t + "es")                   # watch -> watches, echo -> echoes
+    elif last == "y" and len(t) >= 2 and t[-2] not in "aeiou":
+        out.append(t[:-1] + "ies")             # try -> tries
     else:
         out.append(t + "s")                    # line -> lines
+
+    # Suffix -ing (always generate standard, add doubled variant for 1-syllable CVC)
     if last == "e" and t.endswith("ie"):
         out.append(t[:-2] + "ying")            # tie -> tying (not "tiing")
     elif last == "e":
         out.append(t[:-1] + "ing")             # move -> moving
     else:
-        out.append(t + "ing")
+        out.append(t + "ing")                  # water -> watering, step -> steping
+        non_double = ("er", "en", "el", "ow", "al", "or", "ar", "et", "it", "ic", "ed", "ing")
+        if not t.endswith(non_double) and last not in "aeiouwyx" and len(t) >= 3 and t[-2] in "aeiou" and (len(t) < 4 or t[-3] not in "aeiou"):
+            out.append(t + last + "ing")       # step -> stepping, drop -> dropping
+
+    # Suffix -ed/-d/-ied (always generate standard, add doubled variant for 1-syllable CVC)
     if last == "e":
         out.append(t + "d")                    # tie -> tied, line -> lined
-    elif doubles():
-        out.append(t + last + "ed")            # step -> stepped
-        out.append(t + last + "ing")           # step -> stepping
-        if t.endswith(("p", "t")):
-            out.append(t + last + "s")         # drops -> not used; keep simple
+    elif last == "y" and len(t) >= 2 and t[-2] not in "aeiou":
+        out.append(t[:-1] + "ied")             # try -> tried
     else:
-        out.append(t + "ed")
-        if last == "y" and len(t) >= 2 and t[-2] not in "aeiou":
-            stem = t[:-1]                      # try -> tries / tied
-            out.append(stem + "ies")
-            out.append(stem + "ied")
+        out.append(t + "ed")                   # water -> watered, step -> steped
+        non_double = ("er", "en", "el", "ow", "al", "or", "ar", "et", "it", "ic", "ed", "ing")
+        if not t.endswith(non_double) and last not in "aeiouwyx" and len(t) >= 3 and t[-2] in "aeiou" and (len(t) < 4 or t[-3] not in "aeiou"):
+            out.append(t + last + "ed")        # step -> stepped, drop -> dropped
+
     dedup: List[str] = []
     for s in out:
         if s and s not in dedup:
@@ -494,7 +496,8 @@ def _match_german_pv(text_n: str, mod: str, head: str
 
 
 def find_spans(text: str, offsets: Iterable[Tuple[int, int]],
-               mod: str, head: str, compound: Optional[str] = None) -> SpanResult:
+               mod: str, head: str, compound: Optional[str] = None,
+               is_pv: Optional[bool] = None) -> SpanResult:
     """Character-match Mod/Head inside ``text`` and map them to token spans.
 
     ``offsets`` is the tokenizer offset_mapping for ``text`` (special tokens
@@ -505,10 +508,13 @@ def find_spans(text: str, offsets: Iterable[Tuple[int, int]],
     text_n = normalize(text)
 
     # Detect German separable particle verbs (trennbare Verben) where head is the particle
-    t_head_n = normalize(head)
-    is_de_pv = t_head_n in _GERMAN_PARTICLES or bool(
-        compound and normalize(compound).startswith(t_head_n)
-    )
+    if is_pv is False:
+        is_de_pv = False
+    else:
+        t_head_n = normalize(head)
+        is_de_pv = t_head_n in _GERMAN_PARTICLES or bool(
+            compound and normalize(compound).startswith(t_head_n)
+        )
 
     pair = None
     if is_de_pv:
