@@ -589,12 +589,44 @@ class Trainer:
                               degen_str, len(gate_by_state[1]),
                               fallback_str, len(gate_by_state[2]))
 
+            # Projected Metric Cosine vs Gold Labels
+            cos_z_rho_mod = cos_z_rho_head = cos_z_rho_pv = cos_z_rho_pooled = 0.0
+            val_mod_cos_z = val_diag.get('mod_cos_z')
+            val_head_cos_z = val_diag.get('head_cos_z')
+            val_pv_cos_z = val_diag.get('pv_cos_z')
+            if val_mod_cos_z is not None and len(val_mod_cos_z) > 0 and (val_mod_cos_z != 0).any():
+                cos_z_rho_mod = _safe_rho(val_mod_y[nn_mod_mask], val_mod_cos_z[nn_mod_mask]) if nn_mod_mask.any() else 0.0
+                cos_z_rho_head = _safe_rho(val_head_y[nn_head_mask], val_head_cos_z[nn_head_mask]) if nn_head_mask.any() else 0.0
+                cos_z_rho_pv = _safe_rho(val_mod_y[pv_mask], val_pv_cos_z[pv_mask]) if pv_mask.any() else 0.0
+
+                all_eval_cos_z = []
+                if nn_mod_mask.any():
+                    all_eval_cos_z.append(val_mod_cos_z[nn_mod_mask])
+                if nn_head_mask.any() and not self.cfg.targets:
+                    all_eval_cos_z.append(val_head_cos_z[nn_head_mask])
+                if pv_mask.any():
+                    all_eval_cos_z.append(val_pv_cos_z[pv_mask])
+                if all_eval_cos_z:
+                    pooled_cos_z = np.concatenate(all_eval_cos_z)
+                    cos_z_rho_pooled = _safe_rho(pooled_y, pooled_cos_z)
+
             ovf_str = ''
             lr_str = f"lr {diag['lr']:.2e}"
             if 'encoder_lr' in diag:
                 lr_str += f" (enc {diag['encoder_lr']:.2e})"
 
-            if pv_mask.any():
+            is_phase0 = getattr(self.cfg, 'phase0_only', False)
+            if is_phase0:
+                self.logger.info(
+                    'Epoch %d/%d [PHASE-0: %s] | WEP Loss %.4f (sup 0.0) | '
+                    'Proj CosSim ρ (z): mod %.4f | head %.4f | pv %.4f | pooled %.4f (Best: %.4f) | '
+                    'steps %d (skip %d) | scale %.1f | %s',
+                    epoch + 1, self.cfg.total_epochs, phase, train_loss,
+                    cos_z_rho_mod, cos_z_rho_head, cos_z_rho_pv, cos_z_rho_pooled,
+                    best_rho, diag['opt_steps'], diag['skipped'], diag['scale'], lr_str)
+                self.logger.info(
+                    '  [Phase 0 Info] Supervised regression heads are intentionally frozen. Optimizing constituent representation alignment ρ(z).')
+            elif pv_mask.any():
                 self.logger.info(
                     'Epoch %d/%d [%s] | Loss %.4f (nn_m %.4f / nn_h %.4f / pv %.4f) | '
                     'Train Mod ρ %.4f | Train Head ρ %.4f | Train PV ρ %.4f | Train Mean ρ %.4f | '
@@ -629,28 +661,8 @@ class Trainer:
                     '  [Diag] Raw CosSim ρ (h): mod %.4f | head %.4f | pooled %.4f (range [%.2f, %.2f], mean %.2f)',
                     cos_rho_mod, cos_rho_head, cos_rho_pooled, cos_min, cos_max, cos_avg)
 
-            # Projected Metric Cosine vs Gold Labels
-            val_mod_cos_z = val_diag.get('mod_cos_z')
-            val_head_cos_z = val_diag.get('head_cos_z')
-            val_pv_cos_z = val_diag.get('pv_cos_z')
-            if val_mod_cos_z is not None and len(val_mod_cos_z) > 0 and (val_mod_cos_z != 0).any():
-                cos_z_rho_mod = _safe_rho(val_mod_y[nn_mod_mask], val_mod_cos_z[nn_mod_mask]) if nn_mod_mask.any() else 0.0
-                cos_z_rho_head = _safe_rho(val_head_y[nn_head_mask], val_head_cos_z[nn_head_mask]) if nn_head_mask.any() else 0.0
-                cos_z_rho_pv = _safe_rho(val_mod_y[pv_mask], val_pv_cos_z[pv_mask]) if pv_mask.any() else 0.0
-
-                all_eval_cos_z = []
-                if nn_mod_mask.any():
-                    all_eval_cos_z.append(val_mod_cos_z[nn_mod_mask])
-                if nn_head_mask.any() and not self.cfg.targets:
-                    all_eval_cos_z.append(val_head_cos_z[nn_head_mask])
-                if pv_mask.any():
-                    all_eval_cos_z.append(val_pv_cos_z[pv_mask])
-                if all_eval_cos_z:
-                    pooled_cos_z = np.concatenate(all_eval_cos_z)
-                    cos_z_rho_pooled = _safe_rho(pooled_y, pooled_cos_z)
-                else:
-                    cos_z_rho_pooled = 0.0
-
+            # Projected Metric Cosine vs Gold Labels (Diag log for non-phase0)
+            if not is_phase0 and val_mod_cos_z is not None and len(val_mod_cos_z) > 0 and (val_mod_cos_z != 0).any():
                 if pv_mask.any():
                     self.logger.info(
                         '  [Diag] Proj CosSim ρ (z): mod %.4f | head %.4f | pv %.4f | pooled %.4f',
