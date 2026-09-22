@@ -37,6 +37,31 @@ def _embeddings(model) -> nn.Module:
     return model.lm.get_input_embeddings()
 
 
+def _phase2_lr_lambdas(cfg, groups, n_steps: int) -> List:
+    """Per-group LR lambdas for Phase 2 (LoRA/encoder anneal -> 0; heads follow
+    the configured head_lr_schedule, annealing down to min_ratio so they settle
+    into a minimum instead of blasting the training split at constant head_lr
+    for the whole LoRA phase)."""
+    sched_type = getattr(cfg, 'head_lr_schedule', 'constant')
+    min_ratio = float(getattr(cfg, 'head_lr_min_ratio', 0.1))
+    n = int(max(1, n_steps))
+
+    def _head(step):
+        if sched_type == 'constant':
+            return 1.0
+        p = min(max(float(step) / float(n), 0.0), 1.0)
+        if sched_type == 'cosine':
+            return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * p))
+        return min_ratio + (1.0 - min_ratio) * (1.0 - p)
+
+    return [
+        (lambda step: _head(step))
+        if g.get('tag', 'encoder') == 'head'
+        else (lambda step: max(0.0, 1.0 - step / n))
+        for g in groups
+    ]
+
+
 class WeightEMA:
     """Shadow-copy exponential moving average over the trainable parameters.
 
@@ -261,18 +286,11 @@ class Trainer:
             else:
                 scheduler = get_constant_schedule(optimizer)
         else:
-            # Decouple the LR schedules in phase 2: LoRA/encoder anneals to 0
-            # while the heads keep fitting at head_lr. Annealing the head group
-            # too lets the encoder drift the features underneath a head that can
-            # no longer update -- train ρ collapses and the run flat-lines
-            # (underfit / feature drift).
-            lr_lambda = [
-                (lambda step: 1.0)
-                if g.get('tag', 'encoder') == 'head'
-                else (lambda step: max(0.0, 1.0 - step / n_steps))
-                for g in groups
-            ]
-            scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
+            # Phase 2: LoRA/encoder anneals 1 -> 0 while the head group follows
+            # the configured head_lr_schedule, so the heads settle smoothly
+            # instead of being hammered at constant head_lr for the whole phase.
+            scheduler = LambdaLR(
+                optimizer, lr_lambda=_phase2_lr_lambdas(self.cfg, groups, n_steps))
         return optimizer, scheduler
 
     # ------------------------------------------------------------------ #
@@ -363,13 +381,9 @@ class Trainer:
                         g['initial_lr'] = self.cfg.encoder_lr
                 
                 remaining_steps = int(max(1, steps_per_epoch * self.cfg.lora_epochs))
-                lr_lambda = [
-                    (lambda step: 1.0)
-                    if g.get('tag', 'encoder') == 'head'
-                    else (lambda step: max(0.0, 1.0 - step / remaining_steps))
-                    for g in optimizer.param_groups
-                ]
-                scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
+                scheduler = LambdaLR(
+                    optimizer,
+                    lr_lambda=_phase2_lr_lambdas(self.cfg, optimizer.param_groups, remaining_steps))
                 no_improve_epochs = 0   # fresh patience window for the LoRA phase
 
             phase = 'FROZEN' if epoch < self.cfg.freeze_epochs else 'UNFROZEN-TOP'

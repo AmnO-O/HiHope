@@ -61,6 +61,7 @@ class TwoStreamBiEncoderModel(nn.Module):
         fusion_heads: int = 4,
         extract_layers: Optional[Tuple[int, ...]] = (14, 15, 16, 17, 18),
         extract_mode: str = "mean",
+        shared_head: bool = False,
     ):
         super().__init__()
         self.lm = AutoModel.from_pretrained(backbone)
@@ -69,6 +70,7 @@ class TwoStreamBiEncoderModel(nn.Module):
         self.fusion_type = fusion_type
         self.extract_layers = extract_layers
         self.extract_mode = extract_mode
+        self._shared_head = bool(shared_head)
 
         if extract_mode == "learned" and extract_layers:
             self.layer_agg = LearnedLayerWeights(len(extract_layers))
@@ -92,29 +94,53 @@ class TwoStreamBiEncoderModel(nn.Module):
                 nn.Dropout(dropout),
             )
 
-        # Dedicated per-task GaussHeads predicting (mu, sigma)
-        self.mod_head = GaussHead(
-            in_features=hidden_size,
-            hidden=head_hidden,
-            dropout=dropout,
-            floor=sigma_floor,
-        )
-        self.head_head = GaussHead(
-            in_features=hidden_size,
-            hidden=head_hidden,
-            dropout=dropout,
-            floor=sigma_floor,
-        )
-        self.pv_head = GaussHead(
-            in_features=hidden_size,
-            hidden=head_hidden,
-            dropout=dropout,
-            floor=sigma_floor,
-        )
+        # Prediction heads. Default: one dedicated GaussHead per task (mod/head/pv)
+        # so each exit owns its parameters and can get its own LR group. With
+        # ``shared_head=True`` every exit routes through ONE head (the pre-split
+        # behavior) re-registered exactly once under the private ``_head`` name
+        # to keep the state_dict free of duplicated keys.
+        if self._shared_head:
+            self._head = GaussHead(
+                in_features=hidden_size,
+                hidden=head_hidden,
+                dropout=dropout,
+                floor=sigma_floor,
+            )
+        else:
+            self._head_mod = GaussHead(
+                in_features=hidden_size,
+                hidden=head_hidden,
+                dropout=dropout,
+                floor=sigma_floor,
+            )
+            self._head_head = GaussHead(
+                in_features=hidden_size,
+                hidden=head_hidden,
+                dropout=dropout,
+                floor=sigma_floor,
+            )
+            self._head_pv = GaussHead(
+                in_features=hidden_size,
+                hidden=head_hidden,
+                dropout=dropout,
+                floor=sigma_floor,
+            )
 
         # Cache last computed cosine and displacement magnitude for metrics/inspection
         self.last_cos_sim: Optional[torch.Tensor] = None
         self.last_displacement_norm: Optional[torch.Tensor] = None
+
+    @property
+    def mod_head(self) -> nn.Module:
+        return self._head if self._shared_head else self._head_mod
+
+    @property
+    def head_head(self) -> nn.Module:
+        return self._head if self._shared_head else self._head_head
+
+    @property
+    def pv_head(self) -> nn.Module:
+        return self._head if self._shared_head else self._head_pv
 
     @property
     def shift_fuse(self) -> nn.Module:
@@ -135,9 +161,17 @@ class TwoStreamBiEncoderModel(nn.Module):
     def pred_heads(self) -> List[nn.Module]:
         """Return the prediction heads, fusion layers, and learned layer weights for Phase 1 unfreezing."""
         modules = [self.fusion, self.mod_head, self.head_head, self.pv_head]
+        # Shared mode aliases all three to the same module - dedup by id so the
+        # optimizer param group / EMA never sees the same params twice.
+        seen = set()
+        uniq: List[nn.Module] = []
+        for m in modules:
+            if id(m) not in seen:
+                seen.add(id(m))
+                uniq.append(m)
         if self.layer_agg is not None:
-            modules.append(self.layer_agg)
-        return modules
+            uniq.append(self.layer_agg)
+        return uniq
 
     def _extract_hidden(self, outputs) -> torch.Tensor:
         """Extract hidden states from configured layers (e.g. upper-middle layers 14-18).

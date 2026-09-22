@@ -452,6 +452,7 @@ def build_model(cfg, device, load_from: Optional[str | Path] = None) -> nn.Modul
             fusion_heads=getattr(cfg, 'fusion_heads', 4),
             extract_layers=getattr(cfg, 'extract_layers', (14, 15, 16, 17, 18)),
             extract_mode=getattr(cfg, 'extract_mode', 'mean'),
+            shared_head=bool(getattr(cfg, 'shared_head', False)),
         )
         if load_from is not None:
             load_from = Path(load_from)
