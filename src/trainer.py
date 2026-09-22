@@ -299,6 +299,13 @@ class Trainer:
         self.logger.info("Building model architecture (load_from=%s)...", load_from)
         model = build_model(self.cfg, self.device, load_from=load_from)
         adapters = self._apply_lora(model)
+        if load_from is not None:
+            p = Path(load_from)
+            if p.is_file():
+                state = torch.load(p, map_location=self.device, weights_only=True)
+                missing, unexpected = model.load_state_dict(state, strict=False)
+                self.logger.info("Restored checkpoint weights into model and adapters (missing: %d, unexpected: %d)",
+                                 len(missing), len(unexpected))
         ema = WeightEMA(self.cfg.ema_decay) if self.cfg.ema_decay > 0 else None
         if ema is not None:
             ema.register(model)

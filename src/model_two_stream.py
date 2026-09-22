@@ -624,7 +624,10 @@ def build_two_stream_model(
         if not load_from.is_file():
             raise FileNotFoundError(f"state dict not found: {load_from}")
         state = torch.load(load_from, map_location="cpu", weights_only=True)
-        model.lm.load_state_dict(state)
+        try:
+            model.load_state_dict(state, strict=False)
+        except Exception:
+            model.lm.load_state_dict(state, strict=False)
     return model.to(device)
 
 

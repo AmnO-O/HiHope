@@ -22,7 +22,6 @@
   "phase0_only": false,
   "supervised_loss_weight": 1.0,
   "proto_rank_loss": 0.0,
-  "use_ema": true,
   "ema_decay": 0.999,
   "load_from": "models/best.pt"
 }
