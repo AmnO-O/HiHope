@@ -101,10 +101,13 @@ class SemanticShiftFusion(nn.Module):
         hidden_size: int = 768, 
         num_layers: int = 2,
         num_heads: int = 4, 
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        use_adaptive_gate: bool = False,
+        gate_hidden: int = 128,
     ):
         super().__init__()
         self.hidden_size = hidden_size
+        self.use_adaptive_gate = use_adaptive_gate
         heads = num_heads if (hidden_size % num_heads == 0) else 1
 
         # Role embeddings for Context-Queried Stream: [0: Context, 1: Prototype, 2: Forward Displacement]
@@ -135,15 +138,37 @@ class SemanticShiftFusion(nn.Module):
         )
 
         self.out_norm = nn.LayerNorm(hidden_size)
+
+        if self.use_adaptive_gate:
+            state_emb_dim = 16
+            self.state_emb = nn.Embedding(3, state_emb_dim)
+            self.gate_net = nn.Sequential(
+                nn.Linear(2 * hidden_size + state_emb_dim, gate_hidden),
+                nn.LayerNorm(gate_hidden),
+                nn.GELU(),
+                nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
+                nn.Linear(gate_hidden, 1),
+                nn.Sigmoid(),
+            )
+            # Init gate bias to -1.0 so initial g is ~0.27
+            nn.init.constant_(self.gate_net[-2].bias, -1.0)
+            nn.init.xavier_uniform_(self.gate_net[-2].weight, gain=0.1)
+
         self.last_cos: Optional[torch.Tensor] = None
         self.last_raw_cos: Optional[torch.Tensor] = None
 
-    def forward(self, h_ctx: torch.Tensor, h_proto: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, 
+        h_ctx: torch.Tensor, 
+        h_proto: torch.Tensor,
+        state: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """Fuse contextual and prototype vectors via symmetrical cross-attention.
 
         Args:
             h_ctx: Contextual vector of shape (B, H).
             h_proto: Prototype vector of shape (B, H).
+            state: Optional deterministic alignment state tensor of shape (B,).
 
         Returns:
             Fused vector of shape (B, H).
@@ -175,7 +200,17 @@ class SemanticShiftFusion(nn.Module):
 
         # --- Symmetrical Integration with Context Residual ---
         fused_shift = self.combiner(torch.cat([z_ctx, z_proto], dim=-1))  # (B, H)
-        return self.out_norm(h_ctx + fused_shift)
+
+        if not self.use_adaptive_gate or state is None:
+            return self.out_norm(h_ctx + fused_shift)
+
+        s_feat = self.state_emb(state)
+        g = self.gate_net(torch.cat([h_ctx, h_proto, s_feat], dim=-1))  # (B, 1)
+        alpha = 0.5  # Max context attenuation
+        beta = 1.0   # Max prototype shift amplification
+        ctx_scaled = (1.0 - alpha * g) * h_ctx
+        shift_scaled = (1.0 + beta * g) * fused_shift
+        return self.out_norm(ctx_scaled + shift_scaled)
 
 
 def prototype_rank_loss(

@@ -62,6 +62,8 @@ class TwoStreamBiEncoderModel(nn.Module):
         extract_layers: Optional[Tuple[int, ...]] = (14, 15, 16, 17, 18),
         extract_mode: str = "mean",
         shared_head: bool = False,
+        use_adaptive_gate: bool = False,
+        gate_hidden: int = 128,
     ):
         super().__init__()
         self.lm = AutoModel.from_pretrained(backbone)
@@ -84,6 +86,8 @@ class TwoStreamBiEncoderModel(nn.Module):
                 num_layers=fusion_layers,
                 num_heads=fusion_heads,
                 dropout=dropout,
+                use_adaptive_gate=use_adaptive_gate,
+                gate_hidden=gate_hidden,
             )
         else:
             fusion_in_dim = 4 * hidden_size + 1
@@ -269,6 +273,7 @@ class TwoStreamBiEncoderModel(nn.Module):
         h_context: torch.Tensor,
         h_word: torch.Tensor,
         task_head: Optional[nn.Module] = None,
+        state: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute interaction signals, fuse representations, and predict (mu, sigma)."""
         diff = h_context - h_word
@@ -278,7 +283,7 @@ class TwoStreamBiEncoderModel(nn.Module):
         self.last_displacement_norm = torch.norm(diff, p=2, dim=-1)
 
         if isinstance(self.fusion, SemanticShiftFusion):
-            fused = self.fusion(h_context, h_word)
+            fused = self.fusion(h_context, h_word, state=state)
         else:
             prod = h_context * h_word
             combined = torch.cat([h_context, h_word, diff, prod, cos_sim], dim=-1)
@@ -315,7 +320,7 @@ class TwoStreamBiEncoderModel(nn.Module):
             h_word = self.forward_stream_word(word_input_ids, word_attention_mask)
             h_context = self.forward_stream_context(
                 ctx_input_ids, ctx_attention_mask, target_mask, ctx_attention_mask)
-            mu, sigma = self._forward_pair(h_context, h_word)
+            mu, sigma = self._forward_pair(h_context, h_word, state=None)
             if not self.training:
                 mu = mu.clamp(SCORE_MIN, SCORE_MAX)
             return mu, sigma
@@ -348,6 +353,22 @@ class TwoStreamBiEncoderModel(nn.Module):
         h_ctx_head = self.pool_active_context(ctx_hidden, head_span_mask, attention_mask)
         h_ctx_pv = self.pool_active_context(ctx_hidden, pv_span_mask, attention_mask)
 
+        # Construct deterministic alignment state: 0 = clean, 1 = degenerate, 2 = fallback
+        has_m = batch.get('has_mod')
+        has_h = batch.get('has_head')
+        deg = batch.get('degenerate')
+        if has_m is not None and has_h is not None and deg is not None:
+            has_m_t = has_m.to(device=input_ids.device, dtype=torch.bool) if isinstance(has_m, torch.Tensor) else torch.as_tensor(has_m, device=input_ids.device, dtype=torch.bool)
+            has_h_t = has_h.to(device=input_ids.device, dtype=torch.bool) if isinstance(has_h, torch.Tensor) else torch.as_tensor(has_h, device=input_ids.device, dtype=torch.bool)
+            deg_t = deg.to(device=input_ids.device, dtype=torch.bool) if isinstance(deg, torch.Tensor) else torch.as_tensor(deg, device=input_ids.device, dtype=torch.bool)
+            align_state = torch.where(
+                has_m_t & has_h_t,
+                torch.where(deg_t, torch.tensor(1, device=input_ids.device), torch.tensor(0, device=input_ids.device)),
+                torch.tensor(2, device=input_ids.device),
+            )
+        else:
+            align_state = None
+
         # Single-target mode check (batch has 'target' and 'proto_ids')
         if 'target' in batch and 'proto_ids' in batch:
             proto_ids = batch['proto_ids']
@@ -361,11 +382,11 @@ class TwoStreamBiEncoderModel(nn.Module):
             h_word = pool_prototype(self._extract_hidden(proto_outputs), proto_mask)
 
             tgt = batch['target']
-            m_mu, m_sig = self._forward_pair(h_ctx_mod, h_word, self.mod_head)
+            m_mu, m_sig = self._forward_pair(h_ctx_mod, h_word, self.mod_head, state=align_state)
             m_cos = self.last_cos_sim
-            h_mu, h_sig = self._forward_pair(h_ctx_head, h_word, self.head_head)
+            h_mu, h_sig = self._forward_pair(h_ctx_head, h_word, self.head_head, state=align_state)
             h_cos = self.last_cos_sim
-            p_mu, p_sig = self._forward_pair(h_ctx_pv, h_word, self.pv_head)
+            p_mu, p_sig = self._forward_pair(h_ctx_pv, h_word, self.pv_head, state=align_state)
             p_cos = self.last_cos_sim
 
             mu = torch.where((tgt == 0), m_mu, torch.where((tgt == 1), h_mu, p_mu))
@@ -431,13 +452,13 @@ class TwoStreamBiEncoderModel(nn.Module):
                 h_proto_head = self._get_prototype_from_emb(input_ids, head_span_mask)
                 h_proto_pv = 0.5 * (h_proto_mod + h_proto_head)
 
-            mod_mu, mod_sigma = self._forward_pair(h_ctx_mod, h_proto_mod, self.mod_head)
+            mod_mu, mod_sigma = self._forward_pair(h_ctx_mod, h_proto_mod, self.mod_head, state=align_state)
             self.last_mod_cos = getattr(self, 'last_cos_sim', None)
 
-            head_mu, head_sigma = self._forward_pair(h_ctx_head, h_proto_head, self.head_head)
+            head_mu, head_sigma = self._forward_pair(h_ctx_head, h_proto_head, self.head_head, state=align_state)
             self.last_head_cos = getattr(self, 'last_cos_sim', None)
 
-            pv_mu, pv_sigma = self._forward_pair(h_ctx_pv, h_proto_pv, self.pv_head)
+            pv_mu, pv_sigma = self._forward_pair(h_ctx_pv, h_proto_pv, self.pv_head, state=align_state)
             self.last_pv_cos = getattr(self, 'last_cos_sim', None)
 
             if not self.training:
@@ -453,3 +474,28 @@ class TwoStreamBiEncoderModel(nn.Module):
         if with_pv:
             return mod_pred, head_pred, pv_pred
         return mod_pred, head_pred
+
+
+def build_two_stream_model(
+    cfg,
+    device: torch.device,
+    load_from: Optional[Union[str, Path]] = None,
+) -> TwoStreamBiEncoderModel:
+    """Builder for TwoStreamBiEncoderModel."""
+    model = TwoStreamBiEncoderModel(
+        backbone=cfg.backbone,
+        hidden_size=cfg.hidden_size,
+        head_hidden=cfg.head_hidden,
+        dropout=cfg.dropout,
+    )
+    if load_from is not None:
+        load_from = Path(load_from)
+        if not load_from.is_file():
+            raise FileNotFoundError(f"state dict not found: {load_from}")
+        state = torch.load(load_from, map_location="cpu", weights_only=True)
+        model.lm.load_state_dict(state)
+    return model.to(device)
+
+
+build_combined_model = build_two_stream_model
+

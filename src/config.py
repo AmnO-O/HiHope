@@ -121,6 +121,8 @@ class Config:
     target_mask_prob: float = 0.0
     extract_layers: Optional[Tuple[int, ...]] = (14, 15, 16, 17, 18)
     extract_mode: str = 'mean'
+    use_adaptive_gate: bool = False
+    gate_hidden: int = 128
     # True = route every exit (mod/head/pv) through ONE shared GaussHead;
     # False = dedicated per-task GaussHeads. A/B knob for the overfitting study.
     shared_head: bool = False

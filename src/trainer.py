@@ -451,6 +451,7 @@ class Trainer:
                 tr_rho_pv = _safe_rho(tr_py[tr_al_p], tr_p[tr_al_p]) if tr_al_p.any() else 0.0
             else:
                 tr_rho_m = tr_rho_h = tr_rho_pv = 0.0
+                tr_al_m = tr_al_h = tr_al_p = np.array([], dtype=bool)
             tr_nn_any = tr_al_m.any() or tr_al_h.any()
             tr_pv_any = tr_al_p.any()
             if tr_pv_any and tr_nn_any:

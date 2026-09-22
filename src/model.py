@@ -441,7 +441,7 @@ def build_model(cfg, device, load_from: Optional[str | Path] = None) -> nn.Modul
     Defaults to the canonical TwoStreamBiEncoderModel.
     """
     backend = getattr(cfg, 'model_backend', 'twostream')
-    if backend == 'twostream':
+    if backend in ('twostream', 'combined'):
         model = TwoStreamBiEncoderModel(
             backbone=cfg.backbone,
             hidden_size=cfg.hidden_size,
@@ -453,6 +453,8 @@ def build_model(cfg, device, load_from: Optional[str | Path] = None) -> nn.Modul
             extract_layers=getattr(cfg, 'extract_layers', (14, 15, 16, 17, 18)),
             extract_mode=getattr(cfg, 'extract_mode', 'mean'),
             shared_head=bool(getattr(cfg, 'shared_head', False)),
+            use_adaptive_gate=bool(getattr(cfg, 'use_adaptive_gate', False)),
+            gate_hidden=int(getattr(cfg, 'gate_hidden', 128)),
         )
         if load_from is not None:
             load_from = Path(load_from)
