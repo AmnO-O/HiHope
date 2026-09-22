@@ -464,8 +464,8 @@ class Trainer:
             if ema is not None:
                 ema.apply_to(model)
             try:
-                val_mod, val_head, val_pv, val_mod_y, val_head_y, val_mask = evaluate(
-                    model, val_loader, self.device, return_all=True, return_pv=True)
+                val_mod, val_head, val_pv, val_mod_y, val_head_y, val_mask, val_diag = evaluate(
+                    model, val_loader, self.device, return_all=True, return_pv=True, return_diagnostics=True)
             finally:
                 if ema is not None:
                     ema.restore(model)
@@ -506,6 +506,76 @@ class Trainer:
             else:
                 rho_mean = (rho_mod + rho_head) / 2.0
 
+            # --- Diagnostics: Raw Prototype-Context Cosine vs Gold Labels ---
+            val_mod_cos = val_diag['mod_cos']
+            val_head_cos = val_diag['head_cos']
+            val_pv_cos = val_diag['pv_cos']
+
+            cos_rho_mod = _safe_rho(val_mod_y[nn_mod_mask], val_mod_cos[nn_mod_mask]) if nn_mod_mask.any() else 0.0
+            cos_rho_head = _safe_rho(val_head_y[nn_head_mask], val_head_cos[nn_head_mask]) if nn_head_mask.any() else 0.0
+            cos_rho_pv = _safe_rho(val_mod_y[pv_mask], val_pv_cos[pv_mask]) if pv_mask.any() else 0.0
+
+            all_eval_cos = []
+            all_eval_y = []
+            if nn_mod_mask.any():
+                all_eval_cos.append(val_mod_cos[nn_mod_mask])
+                all_eval_y.append(val_mod_y[nn_mod_mask])
+            if nn_head_mask.any() and not self.cfg.targets:
+                all_eval_cos.append(val_head_cos[nn_head_mask])
+                all_eval_y.append(val_head_y[nn_head_mask])
+            if pv_mask.any():
+                all_eval_cos.append(val_pv_cos[pv_mask])
+                all_eval_y.append(val_mod_y[pv_mask])
+
+            if all_eval_cos:
+                pooled_cos = np.concatenate(all_eval_cos)
+                pooled_y = np.concatenate(all_eval_y)
+                cos_rho_pooled = _safe_rho(pooled_y, pooled_cos)
+                cos_min, cos_max, cos_avg = float(pooled_cos.min()), float(pooled_cos.max()), float(pooled_cos.mean())
+            else:
+                cos_rho_pooled, cos_min, cos_max, cos_avg = 0.0, 0.0, 0.0, 0.0
+
+            # --- Diagnostics: Reliance Gate Aggregation over (row, exit) per state ---
+            gate_stats = None
+            if val_diag.get('mod_gate') is not None:
+                mod_g = val_diag['mod_gate']
+                head_g = val_diag['head_gate']
+                pv_g = val_diag['pv_gate']
+                ast = val_diag['align_state']
+
+                gate_by_state = {0: [], 1: [], 2: []}
+                for i in range(len(ast)):
+                    if not val_mask[i]:
+                        continue
+                    s = int(ast[i])
+                    if s in gate_by_state:
+                        if is_pv_mask[i]:
+                            gate_by_state[s].append(float(pv_g[i]))
+                        else:
+                            if self.cfg.targets:
+                                if trg[i] == 0:
+                                    gate_by_state[s].append(float(mod_g[i]))
+                                elif trg[i] == 1:
+                                    gate_by_state[s].append(float(head_g[i]))
+                                else:
+                                    gate_by_state[s].append(float(pv_g[i]))
+                            else:
+                                gate_by_state[s].append(float(mod_g[i]))
+                                gate_by_state[s].append(float(head_g[i]))
+
+                def _fmt_stat(vals):
+                    arr = np.array(vals)
+                    if len(arr) == 0:
+                        return "N/A"
+                    return f"{arr.mean():.2f} ± {arr.std():.2f}"
+
+                clean_str = _fmt_stat(gate_by_state[0])
+                degen_str = _fmt_stat(gate_by_state[1])
+                fallback_str = _fmt_stat(gate_by_state[2])
+                gate_stats = (clean_str, len(gate_by_state[0]),
+                              degen_str, len(gate_by_state[1]),
+                              fallback_str, len(gate_by_state[2]))
+
             ovf_str = ''
             lr_str = f"lr {diag['lr']:.2e}"
             if 'encoder_lr' in diag:
@@ -536,6 +606,23 @@ class Trainer:
                     rho_mod, rho_head, rho_mean,
                     diag['opt_steps'], diag['skipped'], diag['scale'], lr_str)
 
+            # Log diagnostic signals
+            if pv_mask.any():
+                self.logger.info(
+                    '  [Diag] CosSim ρ: mod %.4f | head %.4f | pv %.4f | pooled %.4f (range [%.2f, %.2f], mean %.2f)',
+                    cos_rho_mod, cos_rho_head, cos_rho_pv, cos_rho_pooled, cos_min, cos_max, cos_avg)
+            else:
+                self.logger.info(
+                    '  [Diag] CosSim ρ: mod %.4f | head %.4f | pooled %.4f (range [%.2f, %.2f], mean %.2f)',
+                    cos_rho_mod, cos_rho_head, cos_rho_pooled, cos_min, cos_max, cos_avg)
+
+            if gate_stats is not None:
+                self.logger.info(
+                    '  [Diag] Gate: clean g=%s (n=%d) | degen g=%s (n=%d) | fallback g=%s (n=%d)',
+                    gate_stats[0], gate_stats[1],
+                    gate_stats[2], gate_stats[3],
+                    gate_stats[4], gate_stats[5])
+
             history.append({
                 'epoch': epoch + 1, 'phase': phase,
                 'loss': round(float(train_loss), 5),
@@ -550,6 +637,10 @@ class Trainer:
                 'rho_pv': round(rho_pv, 5),
                 'rho_pv_de': round(rho_pv_de, 5), 'rho_pv_en': round(rho_pv_en, 5),
                 'rho_mean': round(rho_mean, 5),
+                'cos_rho_mod': round(float(cos_rho_mod), 5),
+                'cos_rho_head': round(float(cos_rho_head), 5),
+                'cos_rho_pv': round(float(cos_rho_pv), 5),
+                'cos_rho_pooled': round(float(cos_rho_pooled), 5),
                 'opt_steps': diag['opt_steps'], 'skipped': diag['skipped'],
                 'grad_norm': round(diag['grad_norm'], 4),
                 'scale': round(diag['scale'], 1), 'lr': diag['lr'],

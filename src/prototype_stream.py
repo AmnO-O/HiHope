@@ -156,6 +156,7 @@ class SemanticShiftFusion(nn.Module):
 
         self.last_cos: Optional[torch.Tensor] = None
         self.last_raw_cos: Optional[torch.Tensor] = None
+        self.last_g: Optional[torch.Tensor] = None
 
     def forward(
         self, 
@@ -202,10 +203,12 @@ class SemanticShiftFusion(nn.Module):
         fused_shift = self.combiner(torch.cat([z_ctx, z_proto], dim=-1))  # (B, H)
 
         if not self.use_adaptive_gate or state is None:
+            self.last_g = None
             return self.out_norm(h_ctx + fused_shift)
 
         s_feat = self.state_emb(state)
         g = self.gate_net(torch.cat([h_ctx, h_proto, s_feat], dim=-1))  # (B, 1)
+        self.last_g = g.detach().float()
         alpha = 0.5  # Max context attenuation
         beta = 1.0   # Max prototype shift amplification
         ctx_scaled = (1.0 - alpha * g) * h_ctx

@@ -273,19 +273,26 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
 
 
 def evaluate(model, dataloader, device, return_all: bool = False,
-             return_pv: bool = False):
-    """Predictions + gold labels.
+             return_pv: bool = False, return_diagnostics: bool = False):
+    """Predictions + gold labels + optional diagnostics.
 
     If return_all=True: returns (all_mod, all_head, all_mod_y, all_head_y, label_mask)
     for all rows regardless of whether has_label is True or False.
     If return_all=False: returns (mod[mask], head[mask], mod_y[mask], head_y[mask]) if labeled,
     or (mod, head).
+    If return_diagnostics=True: appends a diagnostics dict as the final tuple element.
     """
     model.eval()
     all_mod, all_head, all_pv = [], [], []
     all_mod_y, all_head_y = [], []
     masks, has_mask = [], False
     device_type = 'cuda' if 'cuda' in str(device) else 'cpu'
+
+    # Diagnostics accumulation (zero overhead unless requested)
+    all_mod_cos, all_head_cos, all_pv_cos = [], [], []
+    all_align_state = []
+    all_mod_gate, all_head_gate, all_pv_gate = [], [], []
+    has_gate = False
 
     with torch.no_grad():
         for batch in dataloader:
@@ -301,6 +308,26 @@ def evaluate(model, dataloader, device, return_all: bool = False,
             all_head.append(head_pred.detach().cpu().numpy().reshape(-1))
             if return_pv:
                 all_pv.append(pv_pred.detach().cpu().numpy().reshape(-1))
+
+            if return_diagnostics:
+                mc = getattr(model, 'last_mod_cos', None)
+                hc = getattr(model, 'last_head_cos', None)
+                pc = getattr(model, 'last_pv_cos', None)
+                st = getattr(model, 'last_align_state', None)
+                mg = getattr(model, 'last_mod_gate', None)
+                hg = getattr(model, 'last_head_gate', None)
+                pg = getattr(model, 'last_pv_gate', None)
+
+                bsz = len(mod_pred)
+                all_mod_cos.append(mc.detach().cpu().numpy().reshape(-1) if mc is not None else np.zeros(bsz))
+                all_head_cos.append(hc.detach().cpu().numpy().reshape(-1) if hc is not None else np.zeros(bsz))
+                all_pv_cos.append(pc.detach().cpu().numpy().reshape(-1) if pc is not None else np.zeros(bsz))
+                all_align_state.append(st.detach().cpu().numpy().reshape(-1) if st is not None else np.full(bsz, -1, dtype=int))
+                if mg is not None and hg is not None and pg is not None:
+                    has_gate = True
+                    all_mod_gate.append(mg.detach().cpu().numpy().reshape(-1))
+                    all_head_gate.append(hg.detach().cpu().numpy().reshape(-1))
+                    all_pv_gate.append(pg.detach().cpu().numpy().reshape(-1))
 
             lab = batch.get('has_label')
             if lab is not None:
@@ -323,6 +350,24 @@ def evaluate(model, dataloader, device, return_all: bool = False,
     mod_y = np.concatenate(all_mod_y) if all_mod_y else np.array([])
     head_y = np.concatenate(all_head_y) if all_head_y else np.array([])
     mask = np.concatenate(masks) if has_mask else np.zeros(len(mod), dtype=bool)
+
+    if return_diagnostics:
+        diags = {
+            'mod_cos': np.concatenate(all_mod_cos) if all_mod_cos else np.array([]),
+            'head_cos': np.concatenate(all_head_cos) if all_head_cos else np.array([]),
+            'pv_cos': np.concatenate(all_pv_cos) if all_pv_cos else np.array([]),
+            'align_state': np.concatenate(all_align_state) if all_align_state else np.array([]),
+            'mod_gate': np.concatenate(all_mod_gate) if has_gate and all_mod_gate else None,
+            'head_gate': np.concatenate(all_head_gate) if has_gate and all_head_gate else None,
+            'pv_gate': np.concatenate(all_pv_gate) if has_gate and all_pv_gate else None,
+        }
+        if return_all:
+            if return_pv:
+                return mod, head, pv, mod_y, head_y, mask, diags
+            return mod, head, mod_y, head_y, mask, diags
+        if has_mask and mask.any():
+            return mod[mask], head[mask], mod_y[mask], head_y[mask], diags
+        return mod, head, diags
 
     if return_all:
         if return_pv:

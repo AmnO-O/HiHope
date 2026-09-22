@@ -133,6 +133,10 @@ class TwoStreamBiEncoderModel(nn.Module):
         # Cache last computed cosine and displacement magnitude for metrics/inspection
         self.last_cos_sim: Optional[torch.Tensor] = None
         self.last_displacement_norm: Optional[torch.Tensor] = None
+        self.last_align_state: Optional[torch.Tensor] = None
+        self.last_mod_gate: Optional[torch.Tensor] = None
+        self.last_head_gate: Optional[torch.Tensor] = None
+        self.last_pv_gate: Optional[torch.Tensor] = None
 
     @property
     def mod_head(self) -> nn.Module:
@@ -284,12 +288,23 @@ class TwoStreamBiEncoderModel(nn.Module):
 
         if isinstance(self.fusion, SemanticShiftFusion):
             fused = self.fusion(h_context, h_word, state=state)
+            gate = getattr(self.fusion, 'last_g', None)
         else:
+            gate = None
             prod = h_context * h_word
             combined = torch.cat([h_context, h_word, diff, prod, cos_sim], dim=-1)
             fused = self.fusion(combined)
 
         head_module = task_head if task_head is not None else self.mod_head
+
+        if gate is not None:
+            if head_module is self.mod_head:
+                self.last_mod_gate = gate
+            elif head_module is self.head_head:
+                self.last_head_gate = gate
+            elif head_module is self.pv_head:
+                self.last_pv_gate = gate
+
         mu, sigma = head_module(fused)
         return mu, sigma
 
@@ -368,6 +383,7 @@ class TwoStreamBiEncoderModel(nn.Module):
             )
         else:
             align_state = None
+        self.last_align_state = align_state.detach() if align_state is not None else None
 
         # Single-target mode check (batch has 'target' and 'proto_ids')
         if 'target' in batch and 'proto_ids' in batch:
