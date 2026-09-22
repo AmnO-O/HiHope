@@ -132,6 +132,9 @@ class Config:
     wep_tau: float = 0.10
     wep_weight: float = 0.08
     wep_use_std_attenuation: bool = False
+    phase0_only: bool = False             # True: train ONLY contrastive WEP-InfoNCE representation alignment
+    supervised_loss_weight: float = 1.0   # Scale factor on Gauss regression heads (0.0 during Phase 0)
+    load_from: Optional[str] = None       # Path to pre-trained checkpoint to initialize weights from
 
     # === optimization ===
     batch_size: int = 32

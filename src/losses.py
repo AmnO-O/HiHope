@@ -129,7 +129,7 @@ def within_exit_infonce_loss(
     has_label: torch.Tensor,
     exit_ids: torch.Tensor,
     tau: float = 0.10,
-    exclude_pv: bool = True,
+    exclude_pv: bool = False,
     std_ratings: Optional[torch.Tensor] = None,
     use_std_attenuation: bool = False,
 ) -> torch.Tensor:
@@ -195,15 +195,15 @@ def within_exit_infonce_loss(
             w_u = w_u * consensus
         weights[mask_u] = w_u
 
-    # 4. Pairwise similarity matrix
+    # 4. Pairwise similarity matrix (computed in float32 for AMP fp16/bf16 stability)
     tau_clamped = float(max(tau, 1e-4))
-    sim = torch.matmul(z_c, z_p.T) / tau_clamped  # [B, B]
+    sim = torch.matmul(z_c, z_p.T).float() / tau_clamped  # [B, B]
 
-    # 5. Block-diagonal exit mask: M[i, j] = 1 if e[i] == e[j]
-    exit_mask = (e.unsqueeze(1) == e.unsqueeze(0)).float()
+    # 5. Block-diagonal exit mask: M[i, j] = True if e[i] == e[j]
+    exit_mask = (e.unsqueeze(1) == e.unsqueeze(0))
 
-    # Mask off-diagonal cross-exit negatives with -1e9 (applied AFTER / tau)
-    masked_sim = sim.masked_fill(exit_mask == 0.0, -1e9)
+    # Mask off-diagonal cross-exit negatives with -inf (safe in float32, no fp16 overflow)
+    masked_sim = sim.masked_fill(~exit_mask, float('-inf'))
 
     # 6. Numerator & Denominator (standard InfoNCE per sample: log_denom - pos_sim >= 0)
     pos_sim = torch.diagonal(sim)

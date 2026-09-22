@@ -425,6 +425,8 @@ class Trainer:
                 wep_tau=getattr(self.cfg, 'wep_tau', 0.10),
                 wep_weight=getattr(self.cfg, 'wep_weight', 0.08),
                 wep_use_std_attenuation=getattr(self.cfg, 'wep_use_std_attenuation', False),
+                phase0_only=getattr(self.cfg, 'phase0_only', False),
+                supervised_loss_weight=getattr(self.cfg, 'supervised_loss_weight', 1.0),
             )
 
             # Compute train rho directly from in-epoch predictions on CORE rows (~is_aux)
@@ -681,8 +683,11 @@ class Trainer:
                 'scale': round(diag['scale'], 1), 'lr': diag['lr'],
             })
 
-            if rho_mean > best_rho:
-                best_rho, best_epoch, no_improve_epochs = rho_mean, epoch + 1, 0
+            is_phase0 = getattr(self.cfg, 'phase0_only', False)
+            eval_score = float(cos_z_rho_pooled) if is_phase0 else float(rho_mean)
+
+            if eval_score > best_rho:
+                best_rho, best_epoch, no_improve_epochs = eval_score, epoch + 1, 0
                 if self.cfg.targets:
                     sel_mod = val_mask & (np.array([r.get('target') == 'mod' for r in self._val_rows]) if self._val_rows else np.zeros(len(val_mod), dtype=bool))
                     sel_head = val_mask & (np.array([r.get('target') == 'head' for r in self._val_rows]) if self._val_rows else np.zeros(len(val_mod), dtype=bool))

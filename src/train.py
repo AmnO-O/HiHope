@@ -45,7 +45,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
                 proto_rank_loss_weight=0.0, proto_margin=0.2,
                 aux_loss_weight=1.0,
                 use_wep_infonce=False, wep_tau=0.10, wep_weight=0.08,
-                wep_use_std_attenuation=False):
+                wep_use_std_attenuation=False,
+                phase0_only=False, supervised_loss_weight=1.0):
     """One scoring epoch with AMP + gradient accumulation + clipping.
 
     Returns the mean supervised loss of the epoch.
@@ -117,25 +118,29 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
             else:
                 mod_pred, head_pred, pv_pred = model(batch, with_pv=True)
 
-            # NN loss (mask=allowed on NN rows)
-            mod_loss = criterion(
-                mod_pred, batch['mod_avg'], mod_logits, batch['mod_std'],
-                mask=mod_mask, weight=aux_w,
-            )
-            head_loss = criterion(
-                head_pred, batch['head_avg'], head_logits, batch['head_std'],
-                mask=head_mask, weight=aux_w,
-            )
+            if phase0_only or float(supervised_loss_weight) == 0.0:
+                mod_loss = head_loss = pv_loss = torch.tensor(0.0, device=device)
+                loss = torch.tensor(0.0, device=device)
+            else:
+                # NN loss (mask=allowed on NN rows)
+                mod_loss = criterion(
+                    mod_pred, batch['mod_avg'], mod_logits, batch['mod_std'],
+                    mask=mod_mask, weight=aux_w,
+                )
+                head_loss = criterion(
+                    head_pred, batch['head_avg'], head_logits, batch['head_std'],
+                    mask=head_mask, weight=aux_w,
+                )
 
-            # PV has only an overall Avg/Std label. Its dedicated composition
-            # exit consumes both Base and Particle spans; mod/head exits do not
-            # receive PV supervision.
-            pv_loss = criterion(
-                pv_pred, batch['mod_avg'], pv_logits, batch['mod_std'],
-                mask=pv_mask, weight=aux_w,
-            )
+                # PV has only an overall Avg/Std label. Its dedicated composition
+                # exit consumes both Base and Particle spans; mod/head exits do not
+                # receive PV supervision.
+                pv_loss = criterion(
+                    pv_pred, batch['mod_avg'], pv_logits, batch['mod_std'],
+                    mask=pv_mask, weight=aux_w,
+                )
 
-            loss = mod_loss + head_loss + pv_loss
+                loss = (mod_loss + head_loss + pv_loss) * float(supervised_loss_weight)
 
             # Within-Exit Partitioned InfoNCE (WEP-InfoNCE)
             if use_wep_infonce and wep_weight > 0.0:
@@ -157,32 +162,53 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
                             has_label=allowed,
                             exit_ids=tgt,
                             tau=wep_tau,
-                            exclude_pv=True,
+                            exclude_pv=False,
                             std_ratings=std_labels,
                             use_std_attenuation=wep_use_std_attenuation,
                         )
                         loss = loss + wep_weight * wep_loss
                 else:
-                    # Joint mode: gather mod and head representations into exit-partitioned batch
+                    # Joint mode: gather mod, head, and pv representations into exit-partitioned batch
                     z_ctx_m = getattr(model, 'last_z_ctx_mod', None)
                     z_proto_m = getattr(model, 'last_z_proto_mod', None)
                     z_ctx_h = getattr(model, 'last_z_ctx_head', None)
                     z_proto_h = getattr(model, 'last_z_proto_head', None)
+                    z_ctx_p = getattr(model, 'last_z_ctx_pv', None)
+                    z_proto_p = getattr(model, 'last_z_proto_pv', None)
                     if z_ctx_m is not None and z_proto_m is not None and z_ctx_h is not None and z_proto_h is not None:
-                        z_c = torch.cat([z_ctx_m, z_ctx_h], dim=0)
-                        z_p = torch.cat([z_proto_m, z_proto_h], dim=0)
-                        r = torch.cat([batch['mod_avg'], batch['head_avg']], dim=0)
-                        s = None
-                        if 'mod_std' in batch and 'head_std' in batch:
-                            s = torch.cat([batch['mod_std'], batch['head_std']], dim=0)
+                        z_c_list = [z_ctx_m, z_ctx_h]
+                        z_p_list = [z_proto_m, z_proto_h]
+                        r_list = [batch['mod_avg'], batch['head_avg']]
                         has_m = allowed_nn & torch.isfinite(batch['mod_avg'])
                         has_h = allowed_nn & torch.isfinite(batch['head_avg'])
-                        hl = torch.cat([has_m, has_h], dim=0)
+                        hl_list = [has_m, has_h]
                         bsz = z_ctx_m.size(0)
-                        e_ids = torch.cat([
+                        e_list = [
                             torch.zeros(bsz, dtype=torch.long, device=device),
                             torch.ones(bsz, dtype=torch.long, device=device),
-                        ], dim=0)
+                        ]
+                        s_list = []
+                        if 'mod_std' in batch and 'head_std' in batch:
+                            s_list = [batch['mod_std'], batch['head_std']]
+
+                        # Exit 2: Particle Verbs (PV)
+                        if z_ctx_p is not None and z_proto_p is not None:
+                            z_c_list.append(z_ctx_p)
+                            z_p_list.append(z_proto_p)
+                            r_list.append(batch['mod_avg'])
+                            has_p = allowed_pv & torch.isfinite(batch['mod_avg'])
+                            hl_list.append(has_p)
+                            e_list.append(torch.full((bsz,), 2, dtype=torch.long, device=device))
+                            if 'mod_std' in batch:
+                                s_list.append(batch['mod_std'])
+
+                        z_c = torch.cat(z_c_list, dim=0)
+                        z_p = torch.cat(z_p_list, dim=0)
+                        r = torch.cat(r_list, dim=0)
+                        hl = torch.cat(hl_list, dim=0)
+                        e_ids = torch.cat(e_list, dim=0)
+                        s = torch.cat(s_list, dim=0) if s_list else None
+
                         wep_loss = within_exit_infonce_loss(
                             z_ctx=z_c,
                             z_proto=z_p,
@@ -190,7 +216,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
                             has_label=hl,
                             exit_ids=e_ids,
                             tau=wep_tau,
-                            exclude_pv=True,
+                            exclude_pv=False,
                             std_ratings=s,
                             use_std_attenuation=wep_use_std_attenuation,
                         )

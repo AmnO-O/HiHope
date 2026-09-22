@@ -69,7 +69,7 @@ def run_train80(cfg: Config, logger: logging.Logger, device,
     from src.trainer import Trainer
     trainer = Trainer(cfg, device, logger, output_dir)
     result = trainer.fit(train_rows, val_rows, tokenizer, fold=None,
-                         ckpt_name='best.pt')
+                         ckpt_name='best.pt', load_from=cfg.load_from)
 
     val_my = result.best_mod_label
     val_hy = result.best_head_label
