@@ -173,7 +173,7 @@ class Config:
     @classmethod
     def from_dict(cls, values: Dict[str, Any], strict: bool = False) -> 'Config':
         known = {f.name for f in fields(cls)}
-        extra = set(values) - known
+        extra = {k for k in values if not k.startswith('_')} - known
         if extra and strict:
             raise ValueError(f'Unknown config keys: {sorted(extra)}')
         safe = {k: v for k, v in values.items() if k in known and v is not None}
@@ -273,6 +273,15 @@ class Config:
             errors.append(f'ema_decay must be in [0, 1), got {self.ema_decay}')
         if self.head_lr <= 0:
             errors.append(f'head_lr must be positive, got {self.head_lr}')
+        if self.head_lr_schedule not in ('constant', 'cosine', 'linear'):
+            errors.append(
+                f'head_lr_schedule must be one of {{"constant", "cosine", "linear"}}, got {self.head_lr_schedule!r}'
+            )
+        if not 0.0 <= self.head_lr_min_ratio <= 1.0:
+            errors.append(f'head_lr_min_ratio must be in [0, 1], got {self.head_lr_min_ratio}')
+        if not 0.0 <= self.warmup_ratio <= 1.0:
+            errors.append(f'warmup_ratio must be in [0, 1], got {self.warmup_ratio}')
+
         if self.lora_targets and self.lora_epochs > 0 and self.encoder_lr <= 0:
             errors.append(f'encoder_lr must be positive when training LoRA, got {self.encoder_lr}')
         elif self.encoder_lr < 0:

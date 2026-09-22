@@ -261,15 +261,30 @@ class Trainer:
             else:
                 scheduler = get_constant_schedule(optimizer)
         else:
-            # Decouple the LR schedules in phase 2: LoRA/encoder anneals to 0
-            # while the heads keep fitting at head_lr. Annealing the head group
-            # too lets the encoder drift the features underneath a head that can
-            # no longer update -- train ρ collapses and the run flat-lines
-            # (underfit / feature drift).
+            # Phase 2 directly from epoch 0:
+            sched_type = getattr(self.cfg, 'head_lr_schedule', 'cosine')
+            min_ratio = float(getattr(self.cfg, 'head_lr_min_ratio', 0.1))
+
+            def make_head_lambda():
+                if sched_type == 'cosine':
+                    return lambda step: min_ratio + (1.0 - min_ratio) * 0.5 * (
+                        1.0 + math.cos(math.pi * min(max(float(step) / float(max(1, n_steps)), 0.0), 1.0))
+                    )
+                elif sched_type == 'linear':
+                    return lambda step: min_ratio + (1.0 - min_ratio) * (
+                        1.0 - min(max(float(step) / float(max(1, n_steps)), 0.0), 1.0)
+                    )
+                return lambda step: 1.0
+
+            def make_encoder_lambda():
+                return lambda step: 0.5 * (
+                    1.0 + math.cos(math.pi * min(max(float(step) / float(max(1, n_steps)), 0.0), 1.0))
+                )
+
             lr_lambda = [
-                (lambda step: 1.0)
-                if g.get('tag', 'encoder') == 'head'
-                else (lambda step: max(0.0, 1.0 - step / n_steps))
+                make_head_lambda() if g.get('tag', 'encoder') == 'head'
+                else (lambda step: 1.0) if g.get('tag', 'encoder') == 'frozen'
+                else make_encoder_lambda()
                 for g in groups
             ]
             scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
