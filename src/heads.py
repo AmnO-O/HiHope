@@ -9,49 +9,6 @@ import torch.nn.functional as F
 SIGMA_FLOOR = 0.04
 
 
-class ClassHead(nn.Module):
-    """Auxiliary Classification Head for multi-task structural regularization.
-    
-    Predicts 3 constituent/construction classes:
-        0 = Modifier ('mod')
-        1 = Head ('head')
-        2 = Particle Verb ('pv')
-        
-    Provides sharp categorical cross-entropy gradients during Phase 1
-    and automated routing at inference time.
-    """
-
-    def __init__(
-        self,
-        in_features: int,
-        num_classes: int = 3,
-        hidden: int = 128,
-        dropout: float = 0.1,
-    ):
-        super().__init__()
-        self.in_features = in_features
-        self.num_classes = num_classes
-        self.classifier = nn.Sequential(
-            nn.Linear(in_features, hidden),
-            nn.LayerNorm(hidden),
-            nn.GELU(),
-            nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
-            nn.Linear(hidden, num_classes),
-        )
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Returns category logits of shape [B, num_classes]."""
-        return self.classifier(x)
-
-
 class GaussHead(nn.Module):
     """Deviated Gaussian head chuẩn hóa: 
     - Trunk MLP dày hơn với LayerNorm + GELU

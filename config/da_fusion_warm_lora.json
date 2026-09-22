@@ -1,5 +1,5 @@
 {
-  "_comment": "Full End-to-End Warm-LoRA Two-Stream Training Config with Decoupled Heads and Balanced Auxiliaries",
+  "_comment": "Full End-to-End Warm-LoRA Two-Stream with Degeneracy-Aware Adaptive Fusion (DA-Fusion)",
   "mode": "train80",
   "backbone": "jhu-clsp/mmBERT-base",
   "model_backend": "twostream",
@@ -16,7 +16,8 @@
   "extract_layers": [14, 15, 16, 17, 18],
   "extract_mode": "mean",
 
-  "use_adaptive_gate": false,
+  "use_adaptive_gate": true,
+  "gate_hidden": 128,
 
   "target_mask_prob": 0.0,
   "train_aux": [
