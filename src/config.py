@@ -127,6 +127,12 @@ class Config:
     # False = dedicated per-task GaussHeads. A/B knob for the overfitting study.
     shared_head: bool = False
 
+    # === Within-Exit Partitioned InfoNCE (WEP-InfoNCE) ===
+    use_wep_infonce: bool = False
+    wep_tau: float = 0.10
+    wep_weight: float = 0.08
+    wep_use_std_attenuation: bool = False
+
     # === optimization ===
     batch_size: int = 32
     accum_steps: int = 1

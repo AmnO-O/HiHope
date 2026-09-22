@@ -411,23 +411,69 @@ class CompDataset(_DatasetBase):
                         is_verb=target_is_verb, is_particle=target_is_particle,
                         mode=self.proto_mode
                     )
-                    p = self.tokenizer(
-                        text, max_length=self.max_proto_length, truncation=True, return_tensors='pt'
-                    )
-                    return p['input_ids'].squeeze(0), p['attention_mask'].squeeze(0)
-                return torch.zeros(1, dtype=input_ids.dtype), torch.zeros(1, dtype=attention_mask.dtype)
+                    try:
+                        p = self.tokenizer(
+                            text, max_length=self.max_proto_length, truncation=True,
+                            return_tensors='pt', return_offsets_mapping=True,
+                        )
+                        offsets = p.get('offset_mapping')
+                        if offsets is not None:
+                            offsets = offsets.squeeze(0).tolist()
+                    except Exception:
+                        p = self.tokenizer(
+                            text, max_length=self.max_proto_length, truncation=True,
+                            return_tensors='pt',
+                        )
+                        offsets = None
 
-            p_ids, p_mask = _tok_word(word, target_is_pv=(t == 'pv' or is_pv))
+                    p_ids = p['input_ids'].squeeze(0)
+                    p_mask = p['attention_mask'].squeeze(0)
+                    p_span = torch.zeros_like(p_mask, dtype=torch.bool)
+
+                    if offsets is not None and w and text:
+                        quoted = f"'{w}'"
+                        if quoted in text:
+                            sc = text.rfind(quoted) + 1
+                            ec = sc + len(w)
+                        elif text.startswith(f"{w}:"):
+                            sc, ec = 0, len(w)
+                        else:
+                            sc = text.rfind(w)
+                            ec = sc + len(w) if sc != -1 else -1
+
+                        if sc != -1 and ec > sc:
+                            for j, (cs, ce) in enumerate(offsets):
+                                if cs < ec and ce > sc:
+                                    p_span[j] = True
+
+                    if not p_span.any():
+                        l_int = int(p_mask.sum().item())
+                        p_span = p_mask.bool().clone()
+                        if l_int >= 3:
+                            p_span[0] = False
+                            p_span[l_int - 1] = False
+
+                    return p_ids, p_mask, p_span
+                return (
+                    torch.zeros(1, dtype=input_ids.dtype),
+                    torch.zeros(1, dtype=attention_mask.dtype),
+                    torch.zeros(1, dtype=torch.bool),
+                )
+
+            p_ids, p_mask, p_span = _tok_word(word, target_is_pv=(t == 'pv' or is_pv))
             item['proto_ids'] = p_ids
             item['proto_mask'] = p_mask
+            item['proto_span_mask'] = p_span
 
             # Provide explicit separate prototypes for joint multi-target mode
-            m_ids, m_mask = _tok_word(mod_word, target_is_pv=False, target_is_verb=is_pv)
-            h_ids, h_mask = _tok_word(head_word, target_is_pv=False, target_is_particle=is_pv)
+            m_ids, m_mask, m_span = _tok_word(mod_word, target_is_pv=False, target_is_verb=is_pv)
+            h_ids, h_mask, h_span = _tok_word(head_word, target_is_pv=False, target_is_particle=is_pv)
             item['mod_proto_ids'] = m_ids
             item['mod_proto_mask'] = m_mask
+            item['mod_proto_span_mask'] = m_span
             item['head_proto_ids'] = h_ids
             item['head_proto_mask'] = h_mask
+            item['head_proto_span_mask'] = h_span
         if r.get('target') is not None:
             item['target'] = torch.tensor(_TARGET_CODE[r['target']], dtype=torch.long)
         return item
@@ -485,9 +531,9 @@ def collate_comp(batch: List[Dict], pad_token_id: int = 0) -> Dict[str, torch.Te
     out: Dict[str, torch.Tensor] = {}
     seq_keys = (
         'input_ids', 'attention_mask', 'mod_span_mask', 'head_span_mask',
-        'proto_ids', 'proto_mask',
-        'mod_proto_ids', 'mod_proto_mask',
-        'head_proto_ids', 'head_proto_mask',
+        'proto_ids', 'proto_mask', 'proto_span_mask',
+        'mod_proto_ids', 'mod_proto_mask', 'mod_proto_span_mask',
+        'head_proto_ids', 'head_proto_mask', 'head_proto_span_mask',
     )
     for key in batch[0]:
         if key in seq_keys:

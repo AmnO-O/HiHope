@@ -24,30 +24,44 @@ import torch.nn.functional as F
 from .fusion_block import FusionBlock
 
 
-def pool_prototype(hidden: torch.Tensor, proto_mask: torch.Tensor) -> torch.Tensor:
+def pool_prototype(
+    hidden: torch.Tensor, 
+    proto_mask: torch.Tensor,
+    span_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
     """Pool lexical subword representations from Stream 1.
 
-    For an isolated target word sequence [CLS] w_1 ... w_K [SEP], this excludes
-    position 0 ([CLS]) and the last active position ([SEP]) whenever K >= 1
+    If span_mask is provided and has active tokens, pools ONLY the target word
+    subwords within the template prompt (excluding prompt boilerplate).
+    Otherwise, for an isolated target word sequence [CLS] w_1 ... w_K [SEP],
+    this excludes position 0 ([CLS]) and the last active position ([SEP]) whenever K >= 1
     so that only the true lexical subword tokens are pooled.
     Degrades gracefully to masked mean over all active tokens if sequence length < 3.
 
     Args:
         hidden: Tensor of shape (B, L, H) from the prototype forward pass.
         proto_mask: Attention mask of shape (B, L) where 1 indicates active tokens.
+        span_mask: Optional boolean or float mask of shape (B, L) marking target word tokens.
 
     Returns:
         Tensor of shape (B, H) containing the unpolluted prototype vector.
     """
     B, L, H = hidden.shape
-    word_mask = proto_mask.clone().bool()
+    default_mask = proto_mask.clone().bool()
     lengths = proto_mask.sum(dim=-1).long()
 
     for i, length in enumerate(lengths):
         l_int = int(length.item())
         if l_int >= 3:
-            word_mask[i, 0] = False           # Exclude [CLS]
-            word_mask[i, l_int - 1] = False   # Exclude [SEP]
+            default_mask[i, 0] = False           # Exclude [CLS]
+            default_mask[i, l_int - 1] = False   # Exclude [SEP]
+
+    if span_mask is not None:
+        sm = span_mask.bool()
+        has_span = sm.any(dim=-1, keepdim=True)
+        word_mask = torch.where(has_span, sm, default_mask)
+    else:
+        word_mask = default_mask
 
     mask_float = word_mask.unsqueeze(-1).float()
     denom = mask_float.sum(dim=1).clamp(min=1.0)

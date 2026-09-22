@@ -43,7 +43,9 @@ def track_optimizer_steps(optimizer) -> None:
 def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, device,
                 grad_clip=1.0, accum_steps=1, report=None, ema=None,
                 proto_rank_loss_weight=0.0, proto_margin=0.2,
-                aux_loss_weight=1.0):
+                aux_loss_weight=1.0,
+                use_wep_infonce=False, wep_tau=0.10, wep_weight=0.08,
+                wep_use_std_attenuation=False):
     """One scoring epoch with AMP + gradient accumulation + clipping.
 
     Returns the mean supervised loss of the epoch.
@@ -51,6 +53,10 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
     if not hasattr(optimizer, '_cmp_step_counter'):
         track_optimizer_steps(optimizer)
     step_counter = getattr(optimizer, '_cmp_step_counter', None)
+
+    # When WEP-InfoNCE is active, disable margin rank loss to prevent gradient interference
+    if use_wep_infonce:
+        proto_rank_loss_weight = 0.0
 
     model.train()
     total_loss = 0.0
@@ -130,6 +136,65 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
             )
 
             loss = mod_loss + head_loss + pv_loss
+
+            # Within-Exit Partitioned InfoNCE (WEP-InfoNCE)
+            if use_wep_infonce and wep_weight > 0.0:
+                from .losses import within_exit_infonce_loss
+                if 'target' in batch:
+                    # Single-target mode
+                    last_z_ctx = getattr(model, 'last_z_ctx', None)
+                    last_z_proto = getattr(model, 'last_z_proto', None)
+                    if last_z_ctx is not None and last_z_proto is not None:
+                        tgt = batch['target']
+                        labels = torch.where(tgt == 1, batch['head_avg'], batch['mod_avg'])
+                        std_labels = None
+                        if 'head_std' in batch and 'mod_std' in batch:
+                            std_labels = torch.where(tgt == 1, batch['head_std'], batch['mod_std'])
+                        wep_loss = within_exit_infonce_loss(
+                            z_ctx=last_z_ctx,
+                            z_proto=last_z_proto,
+                            ratings=labels,
+                            has_label=allowed,
+                            exit_ids=tgt,
+                            tau=wep_tau,
+                            exclude_pv=True,
+                            std_ratings=std_labels,
+                            use_std_attenuation=wep_use_std_attenuation,
+                        )
+                        loss = loss + wep_weight * wep_loss
+                else:
+                    # Joint mode: gather mod and head representations into exit-partitioned batch
+                    z_ctx_m = getattr(model, 'last_z_ctx_mod', None)
+                    z_proto_m = getattr(model, 'last_z_proto_mod', None)
+                    z_ctx_h = getattr(model, 'last_z_ctx_head', None)
+                    z_proto_h = getattr(model, 'last_z_proto_head', None)
+                    if z_ctx_m is not None and z_proto_m is not None and z_ctx_h is not None and z_proto_h is not None:
+                        z_c = torch.cat([z_ctx_m, z_ctx_h], dim=0)
+                        z_p = torch.cat([z_proto_m, z_proto_h], dim=0)
+                        r = torch.cat([batch['mod_avg'], batch['head_avg']], dim=0)
+                        s = None
+                        if 'mod_std' in batch and 'head_std' in batch:
+                            s = torch.cat([batch['mod_std'], batch['head_std']], dim=0)
+                        has_m = allowed_nn & torch.isfinite(batch['mod_avg'])
+                        has_h = allowed_nn & torch.isfinite(batch['head_avg'])
+                        hl = torch.cat([has_m, has_h], dim=0)
+                        bsz = z_ctx_m.size(0)
+                        e_ids = torch.cat([
+                            torch.zeros(bsz, dtype=torch.long, device=device),
+                            torch.ones(bsz, dtype=torch.long, device=device),
+                        ], dim=0)
+                        wep_loss = within_exit_infonce_loss(
+                            z_ctx=z_c,
+                            z_proto=z_p,
+                            ratings=r,
+                            has_label=hl,
+                            exit_ids=e_ids,
+                            tau=wep_tau,
+                            exclude_pv=True,
+                            std_ratings=s,
+                            use_std_attenuation=wep_use_std_attenuation,
+                        )
+                        loss = loss + wep_weight * wep_loss
 
             # Contrastive Prototype Margin Ranking Loss
             if proto_rank_loss_weight > 0.0:
@@ -290,6 +355,7 @@ def evaluate(model, dataloader, device, return_all: bool = False,
 
     # Diagnostics accumulation (zero overhead unless requested)
     all_mod_cos, all_head_cos, all_pv_cos = [], [], []
+    all_mod_cos_z, all_head_cos_z, all_pv_cos_z = [], [], []
     all_align_state = []
     all_mod_gate, all_head_gate, all_pv_gate = [], [], []
     has_gate = False
@@ -313,21 +379,27 @@ def evaluate(model, dataloader, device, return_all: bool = False,
                 mc = getattr(model, 'last_mod_cos', None)
                 hc = getattr(model, 'last_head_cos', None)
                 pc = getattr(model, 'last_pv_cos', None)
+                mcz = getattr(model, 'last_mod_cos_z', None)
+                hcz = getattr(model, 'last_head_cos_z', None)
+                pcz = getattr(model, 'last_pv_cos_z', None)
                 st = getattr(model, 'last_align_state', None)
                 mg = getattr(model, 'last_mod_gate', None)
                 hg = getattr(model, 'last_head_gate', None)
                 pg = getattr(model, 'last_pv_gate', None)
 
                 bsz = len(mod_pred)
-                all_mod_cos.append(mc.detach().cpu().numpy().reshape(-1) if mc is not None else np.zeros(bsz))
-                all_head_cos.append(hc.detach().cpu().numpy().reshape(-1) if hc is not None else np.zeros(bsz))
-                all_pv_cos.append(pc.detach().cpu().numpy().reshape(-1) if pc is not None else np.zeros(bsz))
+                all_mod_cos.append(mc.detach().float().cpu().numpy().reshape(-1) if mc is not None else np.zeros(bsz))
+                all_head_cos.append(hc.detach().float().cpu().numpy().reshape(-1) if hc is not None else np.zeros(bsz))
+                all_pv_cos.append(pc.detach().float().cpu().numpy().reshape(-1) if pc is not None else np.zeros(bsz))
+                all_mod_cos_z.append(mcz.detach().float().cpu().numpy().reshape(-1) if mcz is not None else np.zeros(bsz))
+                all_head_cos_z.append(hcz.detach().float().cpu().numpy().reshape(-1) if hcz is not None else np.zeros(bsz))
+                all_pv_cos_z.append(pcz.detach().float().cpu().numpy().reshape(-1) if pcz is not None else np.zeros(bsz))
                 all_align_state.append(st.detach().cpu().numpy().reshape(-1) if st is not None else np.full(bsz, -1, dtype=int))
                 if mg is not None and hg is not None and pg is not None:
                     has_gate = True
-                    all_mod_gate.append(mg.detach().cpu().numpy().reshape(-1))
-                    all_head_gate.append(hg.detach().cpu().numpy().reshape(-1))
-                    all_pv_gate.append(pg.detach().cpu().numpy().reshape(-1))
+                    all_mod_gate.append(mg.detach().float().cpu().numpy().reshape(-1))
+                    all_head_gate.append(hg.detach().float().cpu().numpy().reshape(-1))
+                    all_pv_gate.append(pg.detach().float().cpu().numpy().reshape(-1))
 
             lab = batch.get('has_label')
             if lab is not None:
@@ -356,6 +428,9 @@ def evaluate(model, dataloader, device, return_all: bool = False,
             'mod_cos': np.concatenate(all_mod_cos) if all_mod_cos else np.array([]),
             'head_cos': np.concatenate(all_head_cos) if all_head_cos else np.array([]),
             'pv_cos': np.concatenate(all_pv_cos) if all_pv_cos else np.array([]),
+            'mod_cos_z': np.concatenate(all_mod_cos_z) if all_mod_cos_z else np.array([]),
+            'head_cos_z': np.concatenate(all_head_cos_z) if all_head_cos_z else np.array([]),
+            'pv_cos_z': np.concatenate(all_pv_cos_z) if all_pv_cos_z else np.array([]),
             'align_state': np.concatenate(all_align_state) if all_align_state else np.array([]),
             'mod_gate': np.concatenate(all_mod_gate) if has_gate and all_mod_gate else None,
             'head_gate': np.concatenate(all_head_gate) if has_gate and all_head_gate else None,

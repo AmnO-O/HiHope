@@ -46,6 +46,23 @@ class LearnedLayerWeights(nn.Module):
         return (stacked_hidden * w).sum(dim=0)
 
 
+class SharedProjector(nn.Module):
+    """Residual 2-layer MLP projection head into L2-normalized metric space."""
+
+    def __init__(self, hidden_size: int = 768, proj_dim: int = 768, dropout: float = 0.1):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, proj_dim),
+        )
+        self.norm = nn.LayerNorm(proj_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.norm(x + self.net(x))
+
+
 class TwoStreamBiEncoderModel(nn.Module):
     """Two-Stream Bi-Encoder for Compositionality and Uncertainty Prediction."""
 
@@ -64,6 +81,7 @@ class TwoStreamBiEncoderModel(nn.Module):
         shared_head: bool = False,
         use_adaptive_gate: bool = False,
         gate_hidden: int = 128,
+        use_wep_infonce: bool = False,
     ):
         super().__init__()
         self.lm = AutoModel.from_pretrained(backbone)
@@ -73,11 +91,19 @@ class TwoStreamBiEncoderModel(nn.Module):
         self.extract_layers = extract_layers
         self.extract_mode = extract_mode
         self._shared_head = bool(shared_head)
+        self.use_wep_infonce = bool(use_wep_infonce)
 
         if extract_mode == "learned" and extract_layers:
             self.layer_agg = LearnedLayerWeights(len(extract_layers))
         else:
             self.layer_agg = None
+
+        # Shared metric projector for WEP-InfoNCE alignment
+        self.projector = SharedProjector(
+            hidden_size=hidden_size,
+            proj_dim=hidden_size,
+            dropout=dropout,
+        )
 
         # Fusion: Cross-Attention Semantic Shift Transformer or Linear projection
         if fusion_type == "cross_attention":
@@ -133,10 +159,26 @@ class TwoStreamBiEncoderModel(nn.Module):
         # Cache last computed cosine and displacement magnitude for metrics/inspection
         self.last_cos_sim: Optional[torch.Tensor] = None
         self.last_displacement_norm: Optional[torch.Tensor] = None
+        self.last_mod_cos: Optional[torch.Tensor] = None
+        self.last_head_cos: Optional[torch.Tensor] = None
+        self.last_pv_cos: Optional[torch.Tensor] = None
         self.last_align_state: Optional[torch.Tensor] = None
         self.last_mod_gate: Optional[torch.Tensor] = None
         self.last_head_gate: Optional[torch.Tensor] = None
         self.last_pv_gate: Optional[torch.Tensor] = None
+
+        # Cached projected vectors for WEP-InfoNCE
+        self.last_z_ctx_mod: Optional[torch.Tensor] = None
+        self.last_z_proto_mod: Optional[torch.Tensor] = None
+        self.last_z_ctx_head: Optional[torch.Tensor] = None
+        self.last_z_proto_head: Optional[torch.Tensor] = None
+        self.last_z_ctx_pv: Optional[torch.Tensor] = None
+        self.last_z_proto_pv: Optional[torch.Tensor] = None
+        self.last_z_ctx: Optional[torch.Tensor] = None
+        self.last_z_proto: Optional[torch.Tensor] = None
+        self.last_mod_cos_z: Optional[torch.Tensor] = None
+        self.last_head_cos_z: Optional[torch.Tensor] = None
+        self.last_pv_cos_z: Optional[torch.Tensor] = None
 
     @property
     def mod_head(self) -> nn.Module:
@@ -168,7 +210,7 @@ class TwoStreamBiEncoderModel(nn.Module):
 
     def pred_heads(self) -> List[nn.Module]:
         """Return the prediction heads, fusion layers, and learned layer weights for Phase 1 unfreezing."""
-        modules = [self.fusion, self.mod_head, self.head_head, self.pv_head]
+        modules = [self.fusion, self.mod_head, self.head_head, self.pv_head, self.projector]
         # Shared mode aliases all three to the same module - dedup by id so the
         # optimizer param group / EMA never sees the same params twice.
         seen = set()
@@ -223,11 +265,17 @@ class TwoStreamBiEncoderModel(nn.Module):
         mask = target_mask.unsqueeze(-1).float()
         has_span = mask.sum(dim=1) > 0.0
         if fallback_mask is not None:
-            fb = fallback_mask.unsqueeze(-1).float()
+            fb = fallback_mask.clone().bool()
+            lengths = fallback_mask.sum(dim=-1).long()
+            for i, length in enumerate(lengths):
+                l_int = int(length.item())
+                if l_int >= 3:
+                    fb[i, 0] = False
+                    fb[i, l_int - 1] = False
             mask = torch.where(
                 has_span.unsqueeze(-1),
                 mask,
-                fb,
+                fb.unsqueeze(-1).float(),
             )
         denom = mask.sum(dim=1).clamp(min=1.0)
         return (hidden_states * mask).sum(dim=1) / denom
@@ -236,6 +284,7 @@ class TwoStreamBiEncoderModel(nn.Module):
         self,
         word_input_ids: torch.Tensor,
         word_attention_mask: torch.Tensor,
+        word_span_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Stream 1: Encode isolated target word/lemma out-of-context.
         
@@ -249,7 +298,7 @@ class TwoStreamBiEncoderModel(nn.Module):
             return_dict=True,
         )
         hidden = self._extract_hidden(outputs)
-        return pool_prototype(hidden, word_attention_mask)
+        return pool_prototype(hidden, word_attention_mask, span_mask=word_span_mask)
 
     def forward_stream_context(
         self,
@@ -288,23 +337,12 @@ class TwoStreamBiEncoderModel(nn.Module):
 
         if isinstance(self.fusion, SemanticShiftFusion):
             fused = self.fusion(h_context, h_word, state=state)
-            gate = getattr(self.fusion, 'last_g', None)
         else:
-            gate = None
             prod = h_context * h_word
             combined = torch.cat([h_context, h_word, diff, prod, cos_sim], dim=-1)
             fused = self.fusion(combined)
 
         head_module = task_head if task_head is not None else self.mod_head
-
-        if gate is not None:
-            if head_module is self.mod_head:
-                self.last_mod_gate = gate
-            elif head_module is self.head_head:
-                self.last_head_gate = gate
-            elif head_module is self.pv_head:
-                self.last_pv_gate = gate
-
         mu, sigma = head_module(fused)
         return mu, sigma
 
@@ -389,21 +427,48 @@ class TwoStreamBiEncoderModel(nn.Module):
         if 'target' in batch and 'proto_ids' in batch:
             proto_ids = batch['proto_ids']
             proto_mask = batch['proto_mask']
+            proto_span_mask = batch.get('proto_span_mask')
             proto_outputs = self.lm(
                 input_ids=proto_ids,
                 attention_mask=proto_mask,
                 output_hidden_states=bool(self.extract_layers),
                 return_dict=True,
             )
-            h_word = pool_prototype(self._extract_hidden(proto_outputs), proto_mask)
+            h_word = pool_prototype(self._extract_hidden(proto_outputs), proto_mask, span_mask=proto_span_mask)
 
             tgt = batch['target']
             m_mu, m_sig = self._forward_pair(h_ctx_mod, h_word, self.mod_head, state=align_state)
             m_cos = self.last_cos_sim
+            m_gate = getattr(self.fusion, 'last_g', None)
             h_mu, h_sig = self._forward_pair(h_ctx_head, h_word, self.head_head, state=align_state)
             h_cos = self.last_cos_sim
+            h_gate = getattr(self.fusion, 'last_g', None)
             p_mu, p_sig = self._forward_pair(h_ctx_pv, h_word, self.pv_head, state=align_state)
             p_cos = self.last_cos_sim
+            p_gate = getattr(self.fusion, 'last_g', None)
+
+            # Metric projection for WEP-InfoNCE
+            z_ctx_mod = self.projector(h_ctx_mod)
+            z_ctx_head = self.projector(h_ctx_head)
+            z_ctx_pv = self.projector(h_ctx_pv)
+            z_word = self.projector(h_word)
+
+            z_ctx = torch.where(
+                (tgt == 0).unsqueeze(-1), z_ctx_mod,
+                torch.where((tgt == 1).unsqueeze(-1), z_ctx_head, z_ctx_pv),
+            )
+            self.last_z_ctx = z_ctx
+            self.last_z_proto = z_word
+            self.last_z_ctx_mod = z_ctx_mod
+            self.last_z_proto_mod = z_word
+            self.last_z_ctx_head = z_ctx_head
+            self.last_z_proto_head = z_word
+            self.last_z_ctx_pv = z_ctx_pv
+            self.last_z_proto_pv = z_word
+
+            self.last_mod_cos_z = corrected_cosine_similarity(z_ctx_mod, z_word, eps=1e-8)
+            self.last_head_cos_z = corrected_cosine_similarity(z_ctx_head, z_word, eps=1e-8)
+            self.last_pv_cos_z = corrected_cosine_similarity(z_ctx_pv, z_word, eps=1e-8)
 
             mu = torch.where((tgt == 0), m_mu, torch.where((tgt == 1), h_mu, p_mu))
             sigma = torch.where((tgt == 0), m_sig, torch.where((tgt == 1), h_sig, p_sig))
@@ -416,6 +481,9 @@ class TwoStreamBiEncoderModel(nn.Module):
             self.last_mod_cos = m_cos
             self.last_head_cos = h_cos
             self.last_pv_cos = p_cos
+            self.last_mod_gate = m_gate
+            self.last_head_gate = h_gate
+            self.last_pv_gate = p_gate
 
             if not self.training:
                 mu = mu.clamp(SCORE_MIN, SCORE_MAX)
@@ -431,7 +499,11 @@ class TwoStreamBiEncoderModel(nn.Module):
                     output_hidden_states=bool(self.extract_layers),
                     return_dict=True,
                 )
-                h_proto_mod = pool_prototype(self._extract_hidden(proto_mod_out), batch['mod_proto_mask'])
+                h_proto_mod = pool_prototype(
+                    self._extract_hidden(proto_mod_out),
+                    batch['mod_proto_mask'],
+                    span_mask=batch.get('mod_proto_span_mask'),
+                )
 
                 proto_head_out = self.lm(
                     input_ids=batch['head_proto_ids'],
@@ -439,7 +511,11 @@ class TwoStreamBiEncoderModel(nn.Module):
                     output_hidden_states=bool(self.extract_layers),
                     return_dict=True,
                 )
-                h_proto_head = pool_prototype(self._extract_hidden(proto_head_out), batch['head_proto_mask'])
+                h_proto_head = pool_prototype(
+                    self._extract_hidden(proto_head_out),
+                    batch['head_proto_mask'],
+                    span_mask=batch.get('head_proto_span_mask'),
+                )
 
                 # For PV rows, proto_ids encodes the full compound verb (e.g. "abziehen" or "give up")
                 if 'proto_ids' in batch and 'proto_mask' in batch:
@@ -449,7 +525,11 @@ class TwoStreamBiEncoderModel(nn.Module):
                         output_hidden_states=bool(self.extract_layers),
                         return_dict=True,
                     )
-                    h_proto_pv = pool_prototype(self._extract_hidden(proto_pv_out), batch['proto_mask'])
+                    h_proto_pv = pool_prototype(
+                        self._extract_hidden(proto_pv_out),
+                        batch['proto_mask'],
+                        span_mask=batch.get('proto_span_mask'),
+                    )
                 else:
                     h_proto_pv = 0.5 * (h_proto_mod + h_proto_head)
             elif 'proto_ids' in batch and 'proto_mask' in batch:
@@ -459,7 +539,11 @@ class TwoStreamBiEncoderModel(nn.Module):
                     output_hidden_states=bool(self.extract_layers),
                     return_dict=True,
                 )
-                h_word_default = pool_prototype(self._extract_hidden(proto_out), batch['proto_mask'])
+                h_word_default = pool_prototype(
+                    self._extract_hidden(proto_out),
+                    batch['proto_mask'],
+                    span_mask=batch.get('proto_span_mask'),
+                )
                 h_proto_mod = h_word_default
                 h_proto_head = h_word_default
                 h_proto_pv = h_word_default
@@ -468,14 +552,36 @@ class TwoStreamBiEncoderModel(nn.Module):
                 h_proto_head = self._get_prototype_from_emb(input_ids, head_span_mask)
                 h_proto_pv = 0.5 * (h_proto_mod + h_proto_head)
 
+            # Metric projection for WEP-InfoNCE
+            z_ctx_mod = self.projector(h_ctx_mod)
+            z_proto_mod = self.projector(h_proto_mod)
+            z_ctx_head = self.projector(h_ctx_head)
+            z_proto_head = self.projector(h_proto_head)
+            z_ctx_pv = self.projector(h_ctx_pv)
+            z_proto_pv = self.projector(h_proto_pv)
+
+            self.last_z_ctx_mod = z_ctx_mod
+            self.last_z_proto_mod = z_proto_mod
+            self.last_z_ctx_head = z_ctx_head
+            self.last_z_proto_head = z_proto_head
+            self.last_z_ctx_pv = z_ctx_pv
+            self.last_z_proto_pv = z_proto_pv
+
+            self.last_mod_cos_z = corrected_cosine_similarity(z_ctx_mod, z_proto_mod, eps=1e-8)
+            self.last_head_cos_z = corrected_cosine_similarity(z_ctx_head, z_proto_head, eps=1e-8)
+            self.last_pv_cos_z = corrected_cosine_similarity(z_ctx_pv, z_proto_pv, eps=1e-8)
+
             mod_mu, mod_sigma = self._forward_pair(h_ctx_mod, h_proto_mod, self.mod_head, state=align_state)
             self.last_mod_cos = getattr(self, 'last_cos_sim', None)
+            self.last_mod_gate = getattr(self.fusion, 'last_g', None)
 
             head_mu, head_sigma = self._forward_pair(h_ctx_head, h_proto_head, self.head_head, state=align_state)
             self.last_head_cos = getattr(self, 'last_cos_sim', None)
+            self.last_head_gate = getattr(self.fusion, 'last_g', None)
 
             pv_mu, pv_sigma = self._forward_pair(h_ctx_pv, h_proto_pv, self.pv_head, state=align_state)
             self.last_pv_cos = getattr(self, 'last_cos_sim', None)
+            self.last_pv_gate = getattr(self.fusion, 'last_g', None)
 
             if not self.training:
                 mod_mu = mod_mu.clamp(SCORE_MIN, SCORE_MAX)
@@ -503,6 +609,15 @@ def build_two_stream_model(
         hidden_size=cfg.hidden_size,
         head_hidden=cfg.head_hidden,
         dropout=cfg.dropout,
+        fusion_type=getattr(cfg, 'fusion_type', 'cross_attention'),
+        fusion_layers=getattr(cfg, 'fusion_layers', 2),
+        fusion_heads=getattr(cfg, 'fusion_heads', 4),
+        extract_layers=getattr(cfg, 'extract_layers', (14, 15, 16, 17, 18)),
+        extract_mode=getattr(cfg, 'extract_mode', 'mean'),
+        shared_head=getattr(cfg, 'shared_head', False),
+        use_adaptive_gate=getattr(cfg, 'use_adaptive_gate', False),
+        gate_hidden=getattr(cfg, 'gate_hidden', 128),
+        use_wep_infonce=getattr(cfg, 'use_wep_infonce', False),
     )
     if load_from is not None:
         load_from = Path(load_from)

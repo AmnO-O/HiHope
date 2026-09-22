@@ -421,6 +421,10 @@ class Trainer:
                 proto_rank_loss_weight=getattr(self.cfg, 'proto_rank_loss', 0.0),
                 proto_margin=getattr(self.cfg, 'proto_margin', 0.2),
                 aux_loss_weight=getattr(self.cfg, 'aux_loss_weight', 1.0),
+                use_wep_infonce=getattr(self.cfg, 'use_wep_infonce', False),
+                wep_tau=getattr(self.cfg, 'wep_tau', 0.10),
+                wep_weight=getattr(self.cfg, 'wep_weight', 0.08),
+                wep_use_std_attenuation=getattr(self.cfg, 'wep_use_std_attenuation', False),
             )
 
             # Compute train rho directly from in-epoch predictions on CORE rows (~is_aux)
@@ -609,12 +613,43 @@ class Trainer:
             # Log diagnostic signals
             if pv_mask.any():
                 self.logger.info(
-                    '  [Diag] CosSim ρ: mod %.4f | head %.4f | pv %.4f | pooled %.4f (range [%.2f, %.2f], mean %.2f)',
+                    '  [Diag] Raw CosSim ρ (h): mod %.4f | head %.4f | pv %.4f | pooled %.4f (range [%.2f, %.2f], mean %.2f)',
                     cos_rho_mod, cos_rho_head, cos_rho_pv, cos_rho_pooled, cos_min, cos_max, cos_avg)
             else:
                 self.logger.info(
-                    '  [Diag] CosSim ρ: mod %.4f | head %.4f | pooled %.4f (range [%.2f, %.2f], mean %.2f)',
+                    '  [Diag] Raw CosSim ρ (h): mod %.4f | head %.4f | pooled %.4f (range [%.2f, %.2f], mean %.2f)',
                     cos_rho_mod, cos_rho_head, cos_rho_pooled, cos_min, cos_max, cos_avg)
+
+            # Projected Metric Cosine vs Gold Labels
+            val_mod_cos_z = val_diag.get('mod_cos_z')
+            val_head_cos_z = val_diag.get('head_cos_z')
+            val_pv_cos_z = val_diag.get('pv_cos_z')
+            if val_mod_cos_z is not None and len(val_mod_cos_z) > 0 and (val_mod_cos_z != 0).any():
+                cos_z_rho_mod = _safe_rho(val_mod_y[nn_mod_mask], val_mod_cos_z[nn_mod_mask]) if nn_mod_mask.any() else 0.0
+                cos_z_rho_head = _safe_rho(val_head_y[nn_head_mask], val_head_cos_z[nn_head_mask]) if nn_head_mask.any() else 0.0
+                cos_z_rho_pv = _safe_rho(val_mod_y[pv_mask], val_pv_cos_z[pv_mask]) if pv_mask.any() else 0.0
+
+                all_eval_cos_z = []
+                if nn_mod_mask.any():
+                    all_eval_cos_z.append(val_mod_cos_z[nn_mod_mask])
+                if nn_head_mask.any() and not self.cfg.targets:
+                    all_eval_cos_z.append(val_head_cos_z[nn_head_mask])
+                if pv_mask.any():
+                    all_eval_cos_z.append(val_pv_cos_z[pv_mask])
+                if all_eval_cos_z:
+                    pooled_cos_z = np.concatenate(all_eval_cos_z)
+                    cos_z_rho_pooled = _safe_rho(pooled_y, pooled_cos_z)
+                else:
+                    cos_z_rho_pooled = 0.0
+
+                if pv_mask.any():
+                    self.logger.info(
+                        '  [Diag] Proj CosSim ρ (z): mod %.4f | head %.4f | pv %.4f | pooled %.4f',
+                        cos_z_rho_mod, cos_z_rho_head, cos_z_rho_pv, cos_z_rho_pooled)
+                else:
+                    self.logger.info(
+                        '  [Diag] Proj CosSim ρ (z): mod %.4f | head %.4f | pooled %.4f',
+                        cos_z_rho_mod, cos_z_rho_head, cos_z_rho_pooled)
 
             if gate_stats is not None:
                 self.logger.info(
