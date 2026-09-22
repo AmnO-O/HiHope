@@ -459,7 +459,10 @@ def build_model(cfg, device, load_from: Optional[str | Path] = None) -> nn.Modul
             if not load_from.is_file():
                 raise FileNotFoundError(f'state dict not found: {load_from}')
             state = torch.load(load_from, map_location='cpu', weights_only=True)
-            model.lm.load_state_dict(state)
+            if any(k.startswith('lm.') for k in state.keys()):
+                model.load_state_dict(state, strict=False)
+            else:
+                model.lm.load_state_dict(state, strict=False)
         return model.to(device)
 
     model = MMBertModel(
@@ -473,5 +476,8 @@ def build_model(cfg, device, load_from: Optional[str | Path] = None) -> nn.Modul
         if not load_from.is_file():
             raise FileNotFoundError(f'state dict not found: {load_from}')
         state = torch.load(load_from, map_location='cpu', weights_only=True)
-        model.lm.load_state_dict(state)
+        if any(k.startswith('lm.') for k in state.keys()):
+            model.load_state_dict(state, strict=False)
+        else:
+            model.lm.load_state_dict(state, strict=False)
     return model.to(device)

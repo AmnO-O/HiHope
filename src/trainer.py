@@ -370,9 +370,13 @@ class Trainer:
                 
                 # Reset base LRs cleanly for Phase 2
                 for g in optimizer.param_groups:
-                    if g.get('tag', 'encoder') == 'head':
+                    tag = g.get('tag', 'encoder')
+                    if tag == 'head':
                         g['lr'] = self.cfg.head_lr
                         g['initial_lr'] = self.cfg.head_lr
+                    elif tag == 'frozen':
+                        g['lr'] = self.cfg.embedding_lr
+                        g['initial_lr'] = self.cfg.embedding_lr
                     else:
                         g['lr'] = self.cfg.encoder_lr
                         g['initial_lr'] = self.cfg.encoder_lr
@@ -398,7 +402,9 @@ class Trainer:
                     )
 
                 lr_lambda = [
-                    make_head_lambda() if g.get('tag', 'encoder') == 'head' else make_encoder_lambda()
+                    make_head_lambda() if g.get('tag', 'encoder') == 'head'
+                    else (lambda step: 1.0) if g.get('tag', 'encoder') == 'frozen'
+                    else make_encoder_lambda()
                     for g in optimizer.param_groups
                 ]
                 scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
