@@ -82,8 +82,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
         # rows (whole-sentence fallback in pool_active_context) both train: the
         # mod/head distinction still reaches the model through the prototype
         # stream (Stream 1). Only rows without labels are excluded.
-        allowed = batch['has_label']
-        is_pv = batch.get('is_pv', torch.zeros_like(allowed))
+        allowed = batch.get('has_label', torch.ones(batch['input_ids'].size(0), dtype=torch.bool, device=device))
+        is_pv = batch.get('is_pv', torch.zeros_like(allowed, dtype=torch.bool))
         allowed_nn = allowed & (~is_pv)
         allowed_pv = allowed & is_pv
 
@@ -107,9 +107,9 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
             # aux rows act as weak regularization: scale their supervised loss
             # contribution by aux_loss_weight (default 1.0 -> unchanged).
             aux_w = torch.where(
-                batch.get('is_aux', torch.zeros_like(allowed)),
-                torch.full_like(allowed, max(float(aux_loss_weight), 1e-3), dtype=allowed.dtype),
-                torch.ones_like(allowed, dtype=allowed.dtype),
+                batch.get('is_aux', torch.zeros_like(allowed, dtype=torch.bool)),
+                torch.full_like(allowed, max(float(aux_loss_weight), 1e-3), dtype=torch.float32),
+                torch.ones_like(allowed, dtype=torch.float32),
             )
 
             if requires_logits:
@@ -121,7 +121,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
             if phase0_only or float(supervised_loss_weight) == 0.0:
                 mod_loss = head_loss = pv_loss = torch.tensor(0.0, device=device)
                 loss = torch.tensor(0.0, device=device)
-            elif 'labels' in batch:
+            elif 'labels' in batch and ('mod_avg' not in batch):
                 # Direct Cloze Prompt supervision with aux weighting and label uncertainty
                 loss = criterion(
                     mod_pred, batch['labels'], mod_logits, batch.get('stds'),
@@ -130,13 +130,18 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
                 )
                 mod_loss = head_loss = pv_loss = loss / 3.0
             else:
+                mod_target = batch.get('mod_avg', batch.get('labels'))
+                head_target = batch.get('head_avg', batch.get('labels'))
+                mod_std = batch.get('mod_std', batch.get('stds'))
+                head_std = batch.get('head_std', batch.get('stds'))
+
                 # NN loss (mask=allowed on NN rows)
                 mod_loss = criterion(
-                    mod_pred, batch['mod_avg'], mod_logits, batch['mod_std'],
+                    mod_pred, mod_target, mod_logits, mod_std,
                     mask=mod_mask, weight=aux_w,
                 )
                 head_loss = criterion(
-                    head_pred, batch['head_avg'], head_logits, batch['head_std'],
+                    head_pred, head_target, head_logits, head_std,
                     mask=head_mask, weight=aux_w,
                 )
 
@@ -144,7 +149,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
                 # exit consumes both Base and Particle spans; mod/head exits do not
                 # receive PV supervision.
                 pv_loss = criterion(
-                    pv_pred, batch['mod_avg'], pv_logits, batch['mod_std'],
+                    pv_pred, mod_target, pv_logits, mod_std,
                     mask=pv_mask, weight=aux_w,
                 )
 
@@ -153,16 +158,21 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
             # Within-Exit Partitioned InfoNCE (WEP-InfoNCE)
             if use_wep_infonce and wep_weight > 0.0:
                 from .losses import within_exit_infonce_loss
+                mod_target = batch.get('mod_avg', batch.get('labels'))
+                head_target = batch.get('head_avg', batch.get('labels'))
+                mod_std = batch.get('mod_std', batch.get('stds'))
+                head_std = batch.get('head_std', batch.get('stds'))
+
                 if 'target' in batch:
                     # Single-target mode
                     last_z_ctx = getattr(model, 'last_z_ctx', None)
                     last_z_proto = getattr(model, 'last_z_proto', None)
-                    if last_z_ctx is not None and last_z_proto is not None:
+                    if last_z_ctx is not None and last_z_proto is not None and mod_target is not None:
                         tgt = batch['target']
-                        labels = torch.where(tgt == 1, batch['head_avg'], batch['mod_avg'])
+                        labels = torch.where(tgt == 1, head_target, mod_target) if head_target is not None else mod_target
                         std_labels = None
-                        if 'head_std' in batch and 'mod_std' in batch:
-                            std_labels = torch.where(tgt == 1, batch['head_std'], batch['mod_std'])
+                        if head_std is not None and mod_std is not None:
+                            std_labels = torch.where(tgt == 1, head_std, mod_std)
                         wep_loss = within_exit_infonce_loss(
                             z_ctx=last_z_ctx,
                             z_proto=last_z_proto,
@@ -183,12 +193,12 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
                     z_proto_h = getattr(model, 'last_z_proto_head', None)
                     z_ctx_p = getattr(model, 'last_z_ctx_pv', None)
                     z_proto_p = getattr(model, 'last_z_proto_pv', None)
-                    if z_ctx_m is not None and z_proto_m is not None and z_ctx_h is not None and z_proto_h is not None:
+                    if z_ctx_m is not None and z_proto_m is not None and z_ctx_h is not None and z_proto_h is not None and mod_target is not None and head_target is not None:
                         z_c_list = [z_ctx_m, z_ctx_h]
                         z_p_list = [z_proto_m, z_proto_h]
-                        r_list = [batch['mod_avg'], batch['head_avg']]
-                        has_m = allowed_nn & torch.isfinite(batch['mod_avg'])
-                        has_h = allowed_nn & torch.isfinite(batch['head_avg'])
+                        r_list = [mod_target, head_target]
+                        has_m = allowed_nn & torch.isfinite(mod_target)
+                        has_h = allowed_nn & torch.isfinite(head_target)
                         hl_list = [has_m, has_h]
                         bsz = z_ctx_m.size(0)
                         e_list = [
@@ -196,19 +206,19 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
                             torch.ones(bsz, dtype=torch.long, device=device),
                         ]
                         s_list = []
-                        if 'mod_std' in batch and 'head_std' in batch:
-                            s_list = [batch['mod_std'], batch['head_std']]
+                        if mod_std is not None and head_std is not None:
+                            s_list = [mod_std, head_std]
 
                         # Exit 2: Particle Verbs (PV)
                         if z_ctx_p is not None and z_proto_p is not None:
                             z_c_list.append(z_ctx_p)
                             z_p_list.append(z_proto_p)
-                            r_list.append(batch['mod_avg'])
-                            has_p = allowed_pv & torch.isfinite(batch['mod_avg'])
+                            r_list.append(mod_target)
+                            has_p = allowed_pv & torch.isfinite(mod_target)
                             hl_list.append(has_p)
                             e_list.append(torch.full((bsz,), 2, dtype=torch.long, device=device))
-                            if 'mod_std' in batch:
-                                s_list.append(batch['mod_std'])
+                            if mod_std is not None:
+                                s_list.append(mod_std)
 
                         z_c = torch.cat(z_c_list, dim=0)
                         z_p = torch.cat(z_p_list, dim=0)
@@ -233,10 +243,12 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
             # Contrastive Prototype Margin Ranking Loss
             if proto_rank_loss_weight > 0.0:
                 from .prototype_stream import prototype_rank_loss
+                mod_target = batch.get('mod_avg', batch.get('labels'))
+                head_target = batch.get('head_avg', batch.get('labels'))
                 if 'target' in batch:
                     last_cos = getattr(model, 'last_cos_sim', None)
-                    if last_cos is not None:
-                        labels = torch.where(batch['target'] == 1, batch['head_avg'], batch['mod_avg'])
+                    if last_cos is not None and mod_target is not None:
+                        labels = torch.where(batch['target'] == 1, head_target, mod_target) if head_target is not None else mod_target
                         rank_loss = prototype_rank_loss(
                             last_cos, labels, margin=proto_margin, mask=allowed
                         )
@@ -245,19 +257,19 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
                     # Joint mode: apply margin ranking loss to each target independently
                     rank_loss = 0.0
                     m_cos = getattr(model, 'last_mod_cos', None)
-                    if m_cos is not None and mod_mask.any():
+                    if m_cos is not None and mod_mask.any() and mod_target is not None:
                         rank_loss = rank_loss + prototype_rank_loss(
-                            m_cos, batch['mod_avg'], margin=proto_margin, mask=mod_mask
+                            m_cos, mod_target, margin=proto_margin, mask=mod_mask
                         )
                     h_cos = getattr(model, 'last_head_cos', None)
-                    if h_cos is not None and head_mask.any():
+                    if h_cos is not None and head_mask.any() and head_target is not None:
                         rank_loss = rank_loss + prototype_rank_loss(
-                            h_cos, batch['head_avg'], margin=proto_margin, mask=head_mask
+                            h_cos, head_target, margin=proto_margin, mask=head_mask
                         )
                     p_cos = getattr(model, 'last_pv_cos', None)
-                    if p_cos is not None and pv_mask.any():
+                    if p_cos is not None and pv_mask.any() and mod_target is not None:
                         rank_loss = rank_loss + prototype_rank_loss(
-                            p_cos, batch['mod_avg'], margin=proto_margin, mask=pv_mask
+                            p_cos, mod_target, margin=proto_margin, mask=pv_mask
                         )
                     loss = loss + proto_rank_loss_weight * rank_loss
 
@@ -272,9 +284,21 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
         tr_mod_preds.append(mod_pred.detach().cpu())
         tr_head_preds.append(head_pred.detach().cpu())
         tr_pv_preds.append(pv_pred.detach().cpu())
-        tr_mod_targets.append(batch['mod_avg'].cpu())
-        tr_head_targets.append(batch['head_avg'].cpu())
-        tr_pv_label.append(batch['mod_avg'].cpu())   # PV reports on the compound Avg
+
+        m_tgt = batch.get('mod_avg', batch.get('labels'))
+        h_tgt = batch.get('head_avg', batch.get('labels'))
+        if m_tgt is not None:
+            tr_mod_targets.append(m_tgt.cpu())
+            tr_pv_label.append(m_tgt.cpu())
+        else:
+            tr_mod_targets.append(torch.zeros_like(mod_pred.detach().cpu()))
+            tr_pv_label.append(torch.zeros_like(pv_pred.detach().cpu()))
+
+        if h_tgt is not None:
+            tr_head_targets.append(h_tgt.cpu())
+        else:
+            tr_head_targets.append(torch.zeros_like(head_pred.detach().cpu()))
+
         tr_allowed.append(allowed.cpu())
         tr_is_pv.append(is_pv.cpu())
         tr_is_aux.append(batch.get('is_aux', torch.zeros_like(allowed, dtype=torch.bool)).cpu())

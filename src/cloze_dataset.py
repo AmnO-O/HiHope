@@ -175,16 +175,29 @@ def collate_cloze_batch(
         return_tensors="pt",
     )
 
+    labels_tensor = torch.tensor(labels, dtype=torch.float32)
+    stds_tensor = torch.tensor(stds, dtype=torch.float32)
+    has_labels_tensor = torch.tensor(has_labels, dtype=torch.bool)
+    is_auxs_tensor = torch.tensor(is_auxs, dtype=torch.bool)
+    target_tensor = torch.tensor(target_codes, dtype=torch.long)
+    is_pv_tensor = (target_tensor == 2)
+
     return {
         "input_ids": padded["input_ids"],
         "attention_mask": padded["attention_mask"],
         "mask_indices": torch.tensor(mask_indices, dtype=torch.long),
-        "labels": torch.tensor(labels, dtype=torch.float32),
-        "stds": torch.tensor(stds, dtype=torch.float32),
-        "has_label": torch.tensor(has_labels, dtype=torch.bool),
-        "is_aux": torch.tensor(is_auxs, dtype=torch.bool),
-        "target": torch.tensor(target_codes, dtype=torch.long),
+        "labels": labels_tensor,
+        "stds": stds_tensor,
+        "has_label": has_labels_tensor,
+        "is_aux": is_auxs_tensor,
+        "target": target_tensor,
         "lang_code": torch.tensor(lang_codes, dtype=torch.long),
         "sem_type_code": torch.tensor(sem_codes, dtype=torch.long),
+        # Compatibility aliases for two-stream loss and metric collectors
+        "mod_avg": labels_tensor,
+        "head_avg": labels_tensor,
+        "mod_std": stds_tensor,
+        "head_std": stds_tensor,
+        "is_pv": is_pv_tensor,
     }
 
