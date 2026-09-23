@@ -470,6 +470,8 @@ def build_model(cfg, device, load_from: Optional[str | Path] = None) -> nn.Modul
             shared_head=bool(getattr(cfg, 'shared_head', False)),
             use_adaptive_gate=bool(getattr(cfg, 'use_adaptive_gate', False)),
             gate_hidden=int(getattr(cfg, 'gate_hidden', 128)),
+            use_wep_infonce=bool(getattr(cfg, 'use_wep_infonce', False)),
+            sigma_floor=float(getattr(cfg, 'sigma_floor', 0.05)),
         )
         if load_from is not None:
             load_from = Path(load_from)

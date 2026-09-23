@@ -18,7 +18,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-import pandas as pd
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
 ROOT = Path(__file__).resolve().parent.parent
 FAILURES: list[str] = []
