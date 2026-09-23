@@ -91,22 +91,22 @@ def build_cloze_prompt(
 
     # Determine target representation
     if sem_type == "bare_lemma":
-        target = w
+        target = f'"{w}"'
     elif sem_type == "particle_verb":
-        target = c if c else w
+        target = f'"{c}"' if c else f'"{w}"'
     else:  # compound
         if c and w and c != w:
-            target = f'{w}' in '{c}'
+            target = f'"{w}" in "{c}"'
         else:
-            target = w if w else c
+            target = f'"{w}"' if w else f'"{c}"'
 
     s_prefix = f"{s} " if s else ""
 
     if style == "score":
         if l == "de":
-            prompt = f'{s_prefix}Ziel: "{target}". Bewertung: {mask_token} / 5'
+            prompt = f'{s_prefix}Ziel: {target}. Bewertung: {mask_token} / 5'
         else:
-            prompt = f'{s_prefix}Target: "{target}". Score: {mask_token} / 5'
+            prompt = f'{s_prefix}Target: {target}. Score: {mask_token} / 5'
     else:
         # Verbalizer descriptive prompt style
         if l == "de":

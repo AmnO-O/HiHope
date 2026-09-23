@@ -900,7 +900,7 @@ def check_cloze_probing() -> None:
         sentence='They bought an old clock at the flea market.',
         word='flea', compound='flea market', lang='en', style='score', mask_token='[MASK]'
     )
-    check('Target: "flea in flea market". Score: [MASK] / 5' in p_en,
+    check('Target: "flea" in "flea market". Score: [MASK] / 5' in p_en,
           'build_cloze_prompt: EN score prompt format correct')
 
     p_de, _ = build_cloze_prompt(

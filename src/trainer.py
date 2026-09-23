@@ -119,11 +119,13 @@ class Trainer:
     # ------------------------------------------------------------------ #
     def _build_loaders(self, train_rows, val_rows, tokenizer):
         self.logger.info("Building Datasets & Tokenizing %d train / %d val rows...", len(train_rows), len(val_rows))
-        if self.cfg.targets:
-            train_rows = expand_targets(train_rows, self.cfg.targets)
-            val_rows = expand_targets(val_rows, self.cfg.targets)
-            self.logger.info('Single-target mode: expanded to %d train / %d val rows (targets=%s)',
-                             len(train_rows), len(val_rows), self.cfg.targets)
+        backend = getattr(self.cfg, 'model_backend', 'twostream')
+        active_targets = self.cfg.targets if self.cfg.targets else (['mod', 'head', 'pv'] if backend == 'cloze' else None)
+        if active_targets:
+            train_rows = expand_targets(train_rows, active_targets)
+            val_rows = expand_targets(val_rows, active_targets)
+            self.logger.info('Target-centric expansion: %d train / %d val rows (targets=%s)',
+                             len(train_rows), len(val_rows), active_targets)
         self._val_rows = list(val_rows)
 
         backend = getattr(self.cfg, 'model_backend', 'twostream')
@@ -499,8 +501,9 @@ class Trainer:
             nn_mask = val_mask & (~is_pv_mask)
             pv_mask = val_mask & is_pv_mask
 
-            if self.cfg.targets:
-                # Single-target mode: each head only has ground truth on the
+            has_target_expanded = bool(self.cfg.targets) or (getattr(self.cfg, 'model_backend', 'twostream') == 'cloze') or any(r.get('target') is not None for r in self._val_rows)
+            if has_target_expanded:
+                # Target-centric / Cloze mode: each head only has ground truth on the
                 # rows that routed to it, so restrict each rho to its target.
                 trg = np.array([0 if r.get('target') == 'mod'
                                 else (1 if r.get('target') == 'head'
@@ -609,7 +612,7 @@ class Trainer:
                         if is_pv_mask[i]:
                             gate_by_state[s].append(float(pv_g[i]))
                         else:
-                            if self.cfg.targets:
+                            if has_target_expanded:
                                 if trg[i] == 0:
                                     gate_by_state[s].append(float(mod_g[i]))
                                 elif trg[i] == 1:
@@ -646,7 +649,7 @@ class Trainer:
                 all_eval_cos_z = []
                 if nn_mod_mask.any():
                     all_eval_cos_z.append(val_mod_cos_z[nn_mod_mask])
-                if nn_head_mask.any() and not self.cfg.targets:
+                if nn_head_mask.any() and not has_target_expanded:
                     all_eval_cos_z.append(val_head_cos_z[nn_head_mask])
                 if pv_mask.any():
                     all_eval_cos_z.append(val_pv_cos_z[pv_mask])
