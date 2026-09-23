@@ -76,6 +76,11 @@ class GaussHead(nn.Module):
         nn.init.zeros_(last_sigma_layer.weight)  # Trọng số = 0 để ban đầu chưa bị nhiễu bởi input
         nn.init.constant_(last_sigma_layer.bias, init_bias)
 
+        # CẤU HÌNH CHO MU: Khởi tạo điểm trung bình ban đầu ở mức ~2.5 (trung tâm dải [0, 5])
+        last_mu_layer = self.mu_branch[-1]
+        if hasattr(last_mu_layer, "bias") and last_mu_layer.bias is not None:
+            nn.init.constant_(last_mu_layer.bias, 2.5)
+
     def forward(self, x: torch.Tensor):
         """Returns (mu (B,), sigma (B,)); sigma > floor luôn được đảm bảo."""
         h = self.trunk(x)

@@ -137,6 +137,7 @@ class Config:
     load_from: Optional[str] = None       # Path to pre-trained checkpoint to initialize weights from
 
     # === Cloze-Prompt Masked Probing knobs ===
+    prompt_style: str = 'score'           # 'score' (ultra-compact) or 'verbalizer'
     use_verbalizer_prior: bool = True
     sigma_floor: float = 0.04
     max_length: int = 160

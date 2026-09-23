@@ -25,10 +25,12 @@ class ClozePromptDataset(Dataset):
         tokenizer: PreTrainedTokenizerBase,
         max_length: int = 128,
         mask_token: Optional[str] = None,
+        prompt_style: str = "score",
     ):
         self.samples = samples
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.prompt_style = prompt_style
         self.mask_token = mask_token or tokenizer.mask_token or "[MASK]"
         self.mask_token_id = tokenizer.mask_token_id or tokenizer.convert_tokens_to_ids(self.mask_token)
 
@@ -82,6 +84,7 @@ class ClozePromptDataset(Dataset):
             is_pv=is_pv,
             filename=filename,
             mask_token=self.mask_token,
+            style=self.prompt_style,
         )
 
         # Tokenize prompt sequence with special guarantee that [MASK] is never truncated

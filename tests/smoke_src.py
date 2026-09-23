@@ -880,6 +880,96 @@ def check_proto_stream() -> None:
         transformers.AutoModel.from_pretrained = orig_from_pretrained
 
 
+def check_cloze_probing() -> None:
+    print('=== 9. TARGET-CENTRIC IN-CONTEXT CLOZE PROBING ===')
+    sys.path.insert(0, str(ROOT))
+    import torch
+    from src.cloze_prompts import build_cloze_prompt, classify_semantic_type
+    from src.cloze_dataset import ClozePromptDataset, collate_cloze_batch
+
+    # 1. Semantic type classification
+    check(classify_semantic_type('flea', 'flea market') == 'compound',
+          'classify_semantic_type: flea in flea market -> compound')
+    check(classify_semantic_type('abbiegen', 'abbiegen') == 'bare_lemma',
+          'classify_semantic_type: abbiegen (identical compound) -> bare_lemma')
+    check(classify_semantic_type('take', 'take off', is_pv=True) == 'particle_verb',
+          'classify_semantic_type: take off (is_pv=True) -> particle_verb')
+
+    # 2. Target-Centric Score Prompts (Ultra-Compact)
+    p_en, _ = build_cloze_prompt(
+        sentence='They bought an old clock at the flea market.',
+        word='flea', compound='flea market', lang='en', style='score', mask_token='[MASK]'
+    )
+    check('Target: "flea in flea market". Score: [MASK] / 5' in p_en,
+          'build_cloze_prompt: EN score prompt format correct')
+
+    p_de, _ = build_cloze_prompt(
+        sentence='Er schloss die Tür ab.',
+        word='schließen', compound='abschließen', lang='de', is_pv=True, style='score', mask_token='[MASK]'
+    )
+    check('Ziel: "abschließen". Bewertung: [MASK] / 5' in p_de,
+          'build_cloze_prompt: DE PV score prompt format correct')
+
+    # 3. ClozePromptDataset & Collation with Mock Tokenizer
+    class MockClozeTokenizer:
+        mask_token = '[MASK]'
+        mask_token_id = 50
+        pad_token_id = 0
+
+        def __call__(self, text, **kwargs):
+            # Return synthetic token IDs with mask token at index 5
+            return {
+                'input_ids': [1, 10, 11, 12, 13, 50, 2],
+                'attention_mask': [1, 1, 1, 1, 1, 1, 1],
+            }
+
+        def pad(self, encoded_inputs, padding=True, return_tensors='pt'):
+            ids = torch.tensor(encoded_inputs['input_ids'])
+            mask = torch.tensor(encoded_inputs['attention_mask'])
+            return {'input_ids': ids, 'attention_mask': mask}
+
+        def encode(self, text, add_special_tokens=False):
+            return [20, 21]
+
+    mock_tok = MockClozeTokenizer()
+    sample_rows = [
+        {
+            'sentence': 'The flea market was crowded.',
+            'word': 'flea',
+            'compound': 'flea market',
+            'target': 'mod',
+            'mod_avg': 4.2,
+            'mod_std': 0.4,
+            'lang': 'en',
+            'has_label': True,
+        },
+        {
+            'sentence': 'Er gab das Rauchen auf.',
+            'word': 'geben',
+            'compound': 'aufgeben',
+            'target': 'pv',
+            'mod_avg': 1.1,
+            'mod_std': 0.3,
+            'lang': 'de',
+            'is_pv': True,
+            'has_label': True,
+        }
+    ]
+
+    ds = ClozePromptDataset(sample_rows, mock_tok, max_length=64, prompt_style='score')
+    check(len(ds) == 2, 'ClozePromptDataset len matches sample size')
+    item0 = ds[0]
+    check(item0['mask_index'] == 5 and item0['has_label'] is True,
+          'ClozePromptDataset accurately tracks [MASK] index and labels')
+
+    batch = collate_cloze_batch([ds[0], ds[1]], mock_tok)
+    check(batch['input_ids'].shape == (2, 7), 'collate_cloze_batch stacks input_ids')
+    check(batch['mask_indices'].shape == (2,) and (batch['mask_indices'] == 5).all(),
+          'collate_cloze_batch stacks mask_indices correctly')
+    check(batch['labels'].shape == (2,) and batch['has_label'].shape == (2,),
+          'collate_cloze_batch returns tensor labels')
+
+
 def main() -> int:
     sync_parse()
     check_config()
@@ -889,6 +979,7 @@ def main() -> int:
     check_fixes()
     check_targets()
     check_proto_stream()
+    check_cloze_probing()
 
     print('=' * 50)
     if FAILURES:

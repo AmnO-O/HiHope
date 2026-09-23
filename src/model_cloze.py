@@ -178,8 +178,8 @@ class ClozeCompositionalityModel(nn.Module):
         """
         if isinstance(batch_or_input_ids, dict):
             input_ids = batch_or_input_ids["input_ids"]
-            attention_mask = batch_or_input_ids["attention_mask"]
-            mask_indices = batch_or_input_ids["mask_indices"]
+            attention_mask = batch_or_input_ids.get("attention_mask")
+            mask_indices = batch_or_input_ids.get("mask_indices")
             if "lang_code" in batch_or_input_ids:
                 code_tensor = batch_or_input_ids["lang_code"]
                 lang = ["de" if int(c) == 1 else "en" for c in code_tensor.cpu().tolist()]
@@ -189,6 +189,20 @@ class ClozeCompositionalityModel(nn.Module):
                 lang = None
         else:
             input_ids = batch_or_input_ids
+
+        if mask_indices is None:
+            mask_id = getattr(self.tokenizer, "mask_token_id", None)
+            if mask_id is not None:
+                mask_matches = (input_ids == mask_id)
+                has_mask = mask_matches.any(dim=-1)
+                indices = mask_matches.int().argmax(dim=-1)
+                mask_indices = torch.where(has_mask, indices, torch.zeros_like(indices))
+            else:
+                mask_indices = torch.zeros(input_ids.size(0), dtype=torch.long, device=input_ids.device)
+        elif not isinstance(mask_indices, torch.Tensor):
+            mask_indices = torch.tensor(mask_indices, dtype=torch.long, device=input_ids.device)
+        else:
+            mask_indices = mask_indices.to(device=input_ids.device)
 
         # Route through the base encoder (model / bert / transformer) to get hidden states
         # without paying the memory cost of computing vocab-size logits across all sequence positions.

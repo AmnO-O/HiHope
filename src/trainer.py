@@ -130,8 +130,9 @@ class Trainer:
         if backend == 'cloze':
             from src.cloze_dataset import ClozePromptDataset, collate_cloze_batch
             max_len = getattr(self.cfg, 'max_length', 160)
-            train_ds = ClozePromptDataset(train_rows, tokenizer, max_length=max_len)
-            val_ds = ClozePromptDataset(val_rows, tokenizer, max_length=max_len)
+            p_style = getattr(self.cfg, 'prompt_style', 'score')
+            train_ds = ClozePromptDataset(train_rows, tokenizer, max_length=max_len, prompt_style=p_style)
+            val_ds = ClozePromptDataset(val_rows, tokenizer, max_length=max_len, prompt_style=p_style)
             collate_fn = lambda b: collate_cloze_batch(b, tokenizer)
         else:
             train_ds = CompDataset(

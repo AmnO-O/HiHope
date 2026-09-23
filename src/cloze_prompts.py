@@ -69,8 +69,15 @@ def build_cloze_prompt(
     is_pv: bool = False,
     filename: Optional[str] = None,
     mask_token: str = "[MASK]",
+    style: str = "score",
 ) -> Tuple[str, str]:
     """Construct a grammatically natural cloze prompt for the target.
+    
+    Supports:
+        style="score" (default): Ultra-compact target-centric score query (~7 tokens overhead).
+            EN: "{sentence} Target: \"{target}\". Score: [MASK] / 5"
+            DE: "{sentence} Ziel: \"{target}\". Bewertung: [MASK] / 5"
+        style="verbalizer": Descriptive cloze carrier for MLM vocabulary probing.
     
     Returns:
         (prompt_text, semantic_type)
@@ -82,31 +89,49 @@ def build_cloze_prompt(
     
     sem_type = classify_semantic_type(w, c, is_pv=is_pv, filename=filename)
 
-    if l == "de":
-        if sem_type == "bare_lemma":
-            prefix = f'Ziel: "{w}". '
-            suffix = f' In diesem Satz wird das Wort "{w}" im {mask_token} Sinne verwendet.'
-        elif sem_type == "particle_verb":
-            target = c if c else w
-            prefix = f'Ziel: "{target}". '
-            suffix = f' In diesem Satz ist der Ausdruck "{target}" {mask_token}.'
-        else:  # compound
-            prefix = f'Ziel: "{w}" in "{c}". '
-            suffix = f' In diesem Satz ist das Wort "{w}" {mask_token}.'
-        sent_carrier = f'Satz: "{s}".'
-    else:  # en
-        if sem_type == "bare_lemma":
-            prefix = f'Target: "{w}". '
-            suffix = f' In this sentence, the word "{w}" is used in a {mask_token} sense.'
-        elif sem_type == "particle_verb":
-            target = c if c else w
-            prefix = f'Target: "{target}". '
-            suffix = f' In this sentence, the expression "{target}" is {mask_token}.'
-        else:  # compound
-            prefix = f'Target: "{w}" in "{c}". '
-            suffix = f' In this sentence, the word "{w}" is {mask_token}.'
-        sent_carrier = f'Sentence: "{s}".'
+    # Determine target representation
+    if sem_type == "bare_lemma":
+        target = w
+    elif sem_type == "particle_verb":
+        target = c if c else w
+    else:  # compound
+        if c and w and c != w:
+            target = f'{w}' in '{c}'
+        else:
+            target = w if w else c
 
-    prompt = f"{prefix}{sent_carrier}{suffix}"
+    s_prefix = f"{s} " if s else ""
+
+    if style == "score":
+        if l == "de":
+            prompt = f'{s_prefix}Ziel: "{target}". Bewertung: {mask_token} / 5'
+        else:
+            prompt = f'{s_prefix}Target: "{target}". Score: {mask_token} / 5'
+    else:
+        # Verbalizer descriptive prompt style
+        if l == "de":
+            if sem_type == "bare_lemma":
+                prefix = f'Ziel: "{w}". '
+                suffix = f' In diesem Satz wird das Wort "{w}" im {mask_token} Sinne verwendet.'
+            elif sem_type == "particle_verb":
+                prefix = f'Ziel: "{target}". '
+                suffix = f' In diesem Satz ist der Ausdruck "{target}" {mask_token}.'
+            else:
+                prefix = f'Ziel: "{w}" in "{c}". '
+                suffix = f' In diesem Satz ist das Wort "{w}" {mask_token}.'
+            sent_carrier = f'Satz: "{s}".'
+        else:
+            if sem_type == "bare_lemma":
+                prefix = f'Target: "{w}". '
+                suffix = f' In this sentence, the word "{w}" is used in a {mask_token} sense.'
+            elif sem_type == "particle_verb":
+                prefix = f'Target: "{target}". '
+                suffix = f' In this sentence, the expression "{target}" is {mask_token}.'
+            else:
+                prefix = f'Target: "{w}" in "{c}". '
+                suffix = f' In this sentence, the word "{w}" is {mask_token}.'
+            sent_carrier = f'Sentence: "{s}".'
+        prompt = f"{prefix}{sent_carrier}{suffix}"
+
     return prompt, sem_type
 
