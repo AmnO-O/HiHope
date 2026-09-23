@@ -115,6 +115,7 @@ def _df_to_rows(df: pd.DataFrame, tag: str, lang: str) -> List[Dict]:
             'head_std': head_std,
             'compound_id': -1,
             'context_id': str(r.get('ContextID', '')),
+            'filename': str(tag),
         })
     return rows
 

@@ -33,7 +33,9 @@ def _safe_rho(y: np.ndarray, p: np.ndarray) -> float:
 
 
 def _embeddings(model) -> nn.Module:
-    """Input-embedding module of the plain AutoModel backbone."""
+    """Input-embedding module of the backbone."""
+    if hasattr(model, 'mlm'):
+        return model.mlm.get_input_embeddings()
     return model.lm.get_input_embeddings()
 
 
@@ -124,18 +126,27 @@ class Trainer:
                              len(train_rows), len(val_rows), self.cfg.targets)
         self._val_rows = list(val_rows)
 
-        train_ds = CompDataset(
-            train_rows, tokenizer, max_len=self.cfg.max_context_length,
-            proto_stream=self.cfg.proto_stream,
-            target_mask_prob=getattr(self.cfg, 'target_mask_prob', 0.0),
-            proto_mode=getattr(self.cfg, 'proto_mode', 'hybrid'),
-            max_proto_length=getattr(self.cfg, 'max_proto_length', 32))
-        val_ds = CompDataset(
-            val_rows, tokenizer, max_len=self.cfg.max_context_length,
-            proto_stream=self.cfg.proto_stream,
-            target_mask_prob=0.0,
-            proto_mode=getattr(self.cfg, 'proto_mode', 'hybrid'),
-            max_proto_length=getattr(self.cfg, 'max_proto_length', 32))
+        backend = getattr(self.cfg, 'model_backend', 'twostream')
+        if backend == 'cloze':
+            from src.cloze_dataset import ClozePromptDataset, collate_cloze_batch
+            max_len = getattr(self.cfg, 'max_length', 160)
+            train_ds = ClozePromptDataset(train_rows, tokenizer, max_length=max_len)
+            val_ds = ClozePromptDataset(val_rows, tokenizer, max_length=max_len)
+            collate_fn = lambda b: collate_cloze_batch(b, tokenizer)
+        else:
+            train_ds = CompDataset(
+                train_rows, tokenizer, max_len=self.cfg.max_context_length,
+                proto_stream=self.cfg.proto_stream,
+                target_mask_prob=getattr(self.cfg, 'target_mask_prob', 0.0),
+                proto_mode=getattr(self.cfg, 'proto_mode', 'hybrid'),
+                max_proto_length=getattr(self.cfg, 'max_proto_length', 32))
+            val_ds = CompDataset(
+                val_rows, tokenizer, max_len=self.cfg.max_context_length,
+                proto_stream=self.cfg.proto_stream,
+                target_mask_prob=0.0,
+                proto_mode=getattr(self.cfg, 'proto_mode', 'hybrid'),
+                max_proto_length=getattr(self.cfg, 'max_proto_length', 32))
+            collate_fn = collate_comp
         
         # Chỉ bật persistent_workers khi num_workers > 0 để tránh deadlock
         num_workers = max(0, self.cfg.num_workers)
@@ -145,12 +156,12 @@ class Trainer:
         train_loader = DataLoader(
             train_ds, batch_size=self.cfg.batch_size, shuffle=True,
             num_workers=num_workers, pin_memory=is_cuda,
-            persistent_workers=use_workers, collate_fn=collate_comp)
+            persistent_workers=use_workers, collate_fn=collate_fn)
 
         val_loader = DataLoader(
             val_ds, batch_size=self.cfg.batch_size * 2, shuffle=False,
             num_workers=num_workers, pin_memory=is_cuda,
-            persistent_workers=use_workers, collate_fn=collate_comp)
+            persistent_workers=use_workers, collate_fn=collate_fn)
             
         self.logger.info("DataLoaders ready (num_workers=%d, pin_memory=%s)", num_workers, is_cuda)
         return train_loader, val_loader

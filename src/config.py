@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 Mode = Literal['train80']
-ModelBackend = Literal['twostream', 'combined', 'exits']
+ModelBackend = Literal['twostream', 'combined', 'exits', 'cloze']
 
 _MODES = ('train80',)
-_MODEL_BACKENDS = ('twostream', 'combined', 'exits')
+_MODEL_BACKENDS = ('twostream', 'combined', 'exits', 'cloze')
 
 
 @dataclass
@@ -135,6 +135,11 @@ class Config:
     phase0_only: bool = False             # True: train ONLY contrastive WEP-InfoNCE representation alignment
     supervised_loss_weight: float = 1.0   # Scale factor on Gauss regression heads (0.0 during Phase 0)
     load_from: Optional[str] = None       # Path to pre-trained checkpoint to initialize weights from
+
+    # === Cloze-Prompt Masked Probing knobs ===
+    use_verbalizer_prior: bool = True
+    sigma_floor: float = 0.04
+    max_length: int = 160
 
     # === optimization ===
     batch_size: int = 32

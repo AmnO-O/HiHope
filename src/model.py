@@ -441,6 +441,18 @@ def build_model(cfg, device, load_from: Optional[str | Path] = None) -> nn.Modul
     Defaults to the canonical TwoStreamBiEncoderModel.
     """
     backend = getattr(cfg, 'model_backend', 'twostream')
+    if backend == 'cloze':
+        from .model_cloze import ClozeCompositionalityModel
+        model = ClozeCompositionalityModel(
+            model_name_or_path=cfg.backbone,
+            extract_layers=getattr(cfg, 'extract_layers', [6, 14, 20]),
+            head_hidden=cfg.head_hidden,
+            dropout=cfg.dropout,
+            sigma_floor=getattr(cfg, 'sigma_floor', 0.04),
+            use_verbalizer_prior=bool(getattr(cfg, 'use_verbalizer_prior', True)),
+        )
+        return model.to(device)
+
     if backend in ('twostream', 'combined'):
         model = TwoStreamBiEncoderModel(
             backbone=cfg.backbone,

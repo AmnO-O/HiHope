@@ -121,6 +121,13 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
             if phase0_only or float(supervised_loss_weight) == 0.0:
                 mod_loss = head_loss = pv_loss = torch.tensor(0.0, device=device)
                 loss = torch.tensor(0.0, device=device)
+            elif 'labels' in batch:
+                # Direct Cloze Prompt supervision
+                loss = criterion(
+                    mod_pred, batch['labels'], None, None,
+                    mask=batch.get('has_label', torch.ones_like(mod_pred, dtype=torch.bool)),
+                )
+                mod_loss = head_loss = pv_loss = loss / 3.0
             else:
                 # NN loss (mask=allowed on NN rows)
                 mod_loss = criterion(
@@ -435,7 +442,11 @@ def evaluate(model, dataloader, device, return_all: bool = False,
                 masks.append(np.zeros(int(mod_pred.numel()), dtype=bool))
 
             # Xử lý an toàn nếu batch không chứa ground truth targets (ví dụ tập Test)
-            if 'mod_avg' in batch and 'head_avg' in batch:
+            if 'labels' in batch:
+                lbl = batch['labels'].cpu().numpy().reshape(-1)
+                all_mod_y.append(lbl)
+                all_head_y.append(lbl)
+            elif 'mod_avg' in batch and 'head_avg' in batch:
                 all_mod_y.append(batch['mod_avg'].cpu().numpy().reshape(-1))
                 all_head_y.append(batch['head_avg'].cpu().numpy().reshape(-1))
             else:
