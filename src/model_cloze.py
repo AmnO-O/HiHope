@@ -69,10 +69,27 @@ class ClozeCompositionalityModel(nn.Module):
         model_config = AutoConfig.from_pretrained(model_name_or_path)
         model_config.tie_word_embeddings = False
         model_config.output_hidden_states = True
+        # ModernBERT config supports reference_compile; disable it to prevent
+        # torch.compile / Inductor autotune crashes and OOM on GPUs with limited SMs.
+        if hasattr(model_config, "reference_compile"):
+            model_config.reference_compile = False
+
         self.mlm = AutoModelForMaskedLM.from_pretrained(
             model_name_or_path,
             config=model_config,
         )
+
+        # In ModernBERT, self.mlm.compiled_head is by default wrapped with @torch.compile.
+        # If compiled_head exists, replace it with a plain uncompiled forward pass:
+        # head(x) -> decoder(head(x)) to bypass Inductor autotune GEMM allocations.
+        if hasattr(self.mlm, "compiled_head"):
+            def _eager_head(hidden_states: torch.Tensor) -> torch.Tensor:
+                out = self.mlm.head(hidden_states) if hasattr(self.mlm, "head") else hidden_states
+                if hasattr(self.mlm, "decoder"):
+                    return self.mlm.decoder(out)
+                return out
+            self.mlm.compiled_head = _eager_head
+
         hidden_size = getattr(self.mlm.config, "hidden_size", 768)
 
         # Multi-layer aggregator (Default: early-semantic layer 6, mid layer 14, upper layer 20)
@@ -173,15 +190,30 @@ class ClozeCompositionalityModel(nn.Module):
         else:
             input_ids = batch_or_input_ids
 
-        outputs = self.mlm(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=True,
-            return_dict=True,
-        )
+        # Route through the base encoder (model / bert / transformer) to get hidden states
+        # without paying the memory cost of computing vocab-size logits across all sequence positions.
+        base_encoder = getattr(self.mlm, "model", None) or getattr(self.mlm, "bert", None)
+        if base_encoder is not None and hasattr(base_encoder, "forward"):
+            enc_outputs = base_encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            hidden_states = enc_outputs.hidden_states
+            last_hidden_state = enc_outputs.last_hidden_state
+        else:
+            outputs = self.mlm(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            hidden_states = outputs.hidden_states
+            last_hidden_state = outputs.hidden_states[-1]
 
         # 1. Multi-layer hidden state aggregation across semantic and syntax layers
-        aggregated_hidden = self.layer_agg(outputs.hidden_states)  # [B, SeqLen, Hidden]
+        aggregated_hidden = self.layer_agg(hidden_states)  # [B, SeqLen, Hidden]
 
         # 2. Extract hidden state at the exact [MASK] position
         batch_size = input_ids.size(0)
@@ -189,10 +221,24 @@ class ClozeCompositionalityModel(nn.Module):
         h_mask = aggregated_hidden[batch_indices, mask_indices]  # [B, Hidden]
 
         # 3. Optional Verbalizer Logit Prior computation
-        if self.use_verbalizer_prior and hasattr(outputs, "logits"):
-            mask_logits = outputs.logits[batch_indices, mask_indices]  # [B, VocabSize]
-            delta_verb = self.compute_verbalizer_prior(mask_logits, lang_list=lang)
-            feature_vector = torch.cat([h_mask, delta_verb], dim=-1)
+        # Instead of projecting [B, SeqLen, Vocab] (which takes >13 GiB VRAM),
+        # project ONLY the [MASK] tokens [B, 1, Hidden] -> [B, Vocab]
+        if self.use_verbalizer_prior:
+            last_mask_h = last_hidden_state[batch_indices, mask_indices].unsqueeze(1)  # [B, 1, Hidden]
+            mask_logits = None
+            if hasattr(self.mlm, "head") and hasattr(self.mlm, "decoder"):
+                head_out = self.mlm.head(last_mask_h)
+                mask_logits = self.mlm.decoder(head_out).squeeze(1)  # [B, VocabSize]
+            elif hasattr(self.mlm, "cls"):
+                mask_logits = self.mlm.cls(last_mask_h).squeeze(1)
+            elif hasattr(self.mlm, "compiled_head"):
+                mask_logits = self.mlm.compiled_head(last_mask_h).squeeze(1)
+
+            if mask_logits is not None:
+                delta_verb = self.compute_verbalizer_prior(mask_logits, lang_list=lang)
+                feature_vector = torch.cat([h_mask, delta_verb], dim=-1)
+            else:
+                feature_vector = h_mask
         else:
             feature_vector = h_mask
 

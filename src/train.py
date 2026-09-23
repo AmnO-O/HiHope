@@ -493,7 +493,9 @@ def evaluate(model, dataloader, device, return_all: bool = False,
 
 def unfreeze_top_layers(model, from_layer: int) -> None:
     """Unfreeze top encoder layers (from_layer..last) + final norm (if any)."""
-    base = model.lm
+    base = getattr(model, 'mlm', None) or getattr(model, 'lm', None)
+    if base is None:
+        raise AttributeError('Model has neither lm nor mlm backbone')
     for attr in ('model', 'bert', 'base_model', 'transformer'):
         if hasattr(base, attr):
             base = getattr(base, attr)
