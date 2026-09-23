@@ -63,13 +63,15 @@ class ClozeCompositionalityModel(nn.Module):
 
         # Load pre-trained Masked LM. The checkpoint ships untied
         # embeddings + LM-head weights, so silence HF's "both present, will
-        # NOT tie" warning by declaring tie_word_embeddings=False.
+        # NOT tie" warning by declaring tie_word_embeddings=False. ModernBERT
+        # also rejects ``output_hidden_states`` as a from_pretrained kwarg, so
+        # both knobs live in the config object.
         model_config = AutoConfig.from_pretrained(model_name_or_path)
         model_config.tie_word_embeddings = False
+        model_config.output_hidden_states = True
         self.mlm = AutoModelForMaskedLM.from_pretrained(
             model_name_or_path,
             config=model_config,
-            output_hidden_states=True,
         )
         hidden_size = getattr(self.mlm.config, "hidden_size", 768)
 
