@@ -16,7 +16,7 @@
   "dropout": 0.2,
   "freeze_epochs": 10,
   "lora_epochs": 20,
-  "lora_targets": ["q_proj", "v_proj"],
+  "lora_targets": ["attn.Wqkv", "attn.Wo"],
   "lora_rank": 8,
   "lora_alpha": 16,
   "lora_dropout": 0.1,

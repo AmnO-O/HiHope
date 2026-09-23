@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoModelForMaskedLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForMaskedLM, AutoTokenizer
 
 from .cloze_prompts import VERBALIZER_TOKENS
 from .heads import GaussHead
@@ -61,9 +61,14 @@ class ClozeCompositionalityModel(nn.Module):
         self.model_name = model_name_or_path
         self.use_verbalizer_prior = use_verbalizer_prior
 
-        # Load pre-trained Masked LM
+        # Load pre-trained Masked LM. The checkpoint ships untied
+        # embeddings + LM-head weights, so silence HF's "both present, will
+        # NOT tie" warning by declaring tie_word_embeddings=False.
+        model_config = AutoConfig.from_pretrained(model_name_or_path)
+        model_config.tie_word_embeddings = False
         self.mlm = AutoModelForMaskedLM.from_pretrained(
             model_name_or_path,
+            config=model_config,
             output_hidden_states=True,
         )
         hidden_size = getattr(self.mlm.config, "hidden_size", 768)
