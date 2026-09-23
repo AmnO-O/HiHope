@@ -524,14 +524,29 @@ class Trainer:
             rho_pv_en = _safe_rho(val_mod_y[en_pv_mask], val_pv[en_pv_mask]) if en_pv_mask.any() else 0.0
 
             # Per-lineage macro evaluation (en-nn, de-nn, en-pv, de-pv)
-            # Lines belong to lineages: en-nn (NN mod/head en), de-nn (NN mod/head de), en-pv (PV en), de-pv (PV de)
+            # Lines belong to lineages: en-nn (NN mod+head en), de-nn (NN mod+head de), en-pv (PV en), de-pv (PV de)
             lineage_rhos = []
-            en_nn_mask = nn_mod_mask & (lang_arr == 'en')
-            if en_nn_mask.any():
-                lineage_rhos.append(_safe_rho(val_mod_y[en_nn_mask], val_mod[en_nn_mask]))
-            de_nn_mask = nn_mod_mask & (lang_arr == 'de')
-            if de_nn_mask.any():
-                lineage_rhos.append(_safe_rho(val_mod_y[de_nn_mask], val_mod[de_nn_mask]))
+            
+            # en-nn: combine mod and head predictions and labels
+            en_nn_mod = nn_mod_mask & (lang_arr == 'en')
+            en_nn_head = nn_head_mask & (lang_arr == 'en')
+            if en_nn_mod.any() and en_nn_head.any():
+                en_nn_y = np.concatenate([val_mod_y[en_nn_mod], val_head_y[en_nn_head]])
+                en_nn_p = np.concatenate([val_mod[en_nn_mod], val_head[en_nn_head]])
+                lineage_rhos.append(_safe_rho(en_nn_y, en_nn_p))
+            elif en_nn_mod.any():
+                lineage_rhos.append(_safe_rho(val_mod_y[en_nn_mod], val_mod[en_nn_mod]))
+
+            # de-nn: combine mod and head predictions and labels
+            de_nn_mod = nn_mod_mask & (lang_arr == 'de')
+            de_nn_head = nn_head_mask & (lang_arr == 'de')
+            if de_nn_mod.any() and de_nn_head.any():
+                de_nn_y = np.concatenate([val_mod_y[de_nn_mod], val_head_y[de_nn_head]])
+                de_nn_p = np.concatenate([val_mod[de_nn_mod], val_head[de_nn_head]])
+                lineage_rhos.append(_safe_rho(de_nn_y, de_nn_p))
+            elif de_nn_mod.any():
+                lineage_rhos.append(_safe_rho(val_mod_y[de_nn_mod], val_mod[de_nn_mod]))
+
             if en_pv_mask.any():
                 lineage_rhos.append(rho_pv_en)
             if de_pv_mask.any():

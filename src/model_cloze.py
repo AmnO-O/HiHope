@@ -156,7 +156,13 @@ class ClozeCompositionalityModel(nn.Module):
             input_ids = batch_or_input_ids["input_ids"]
             attention_mask = batch_or_input_ids["attention_mask"]
             mask_indices = batch_or_input_ids["mask_indices"]
-            lang = batch_or_input_ids.get("langs")
+            if "lang_code" in batch_or_input_ids:
+                code_tensor = batch_or_input_ids["lang_code"]
+                lang = ["de" if int(c) == 1 else "en" for c in code_tensor.cpu().tolist()]
+            elif "langs" in batch_or_input_ids:
+                lang = batch_or_input_ids["langs"]
+            else:
+                lang = None
         else:
             input_ids = batch_or_input_ids
 

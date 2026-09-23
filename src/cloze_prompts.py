@@ -97,7 +97,7 @@ def build_cloze_prompt(
     else:  # en
         if sem_type == "bare_lemma":
             prefix = f'Target: "{w}". '
-            suffix = f' In this sentence, the word "{word}" is used in a {mask_token} sense.'
+            suffix = f' In this sentence, the word "{w}" is used in a {mask_token} sense.'
         elif sem_type == "particle_verb":
             target = c if c else w
             prefix = f'Target: "{target}". '
