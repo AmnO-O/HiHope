@@ -39,24 +39,38 @@ class ClozePromptDataset(Dataset):
         item = self.samples[idx]
 
         # Extract record fields
-        sentence = item.get("sentence") or item.get("Sentence") or item.get("context") or ""
+        sentence = item.get("sentence") if item.get("sentence") is not None else (
+            item.get("Sentence") if item.get("Sentence") is not None else item.get("context", "")
+        )
         target_name = item.get("target")
+        std = None
         if target_name == "mod":
             word = item.get("mod") or item.get("word") or ""
             label = item.get("mod_avg")
+            std = item.get("mod_std")
         elif target_name == "head":
             word = item.get("head") or item.get("word") or ""
             label = item.get("head_avg")
+            std = item.get("head_std")
         elif target_name == "pv":
             word = item.get("compound") or item.get("mod") or item.get("word") or ""
             label = item.get("mod_avg")  # PV avg stored in mod_avg
+            std = item.get("mod_std")
         else:
             word = item.get("word") or item.get("Word") or item.get("mod") or item.get("head") or ""
-            label = item.get("score") or item.get("rating") or item.get("label") or item.get("mod_avg")
+            label = item.get("score")
+            if label is None:
+                label = item.get("rating")
+            if label is None:
+                label = item.get("label")
+            if label is None:
+                label = item.get("mod_avg")
+            std = item.get("mod_std") or item.get("std") or item.get("Std")
 
         compound = item.get("compound") or item.get("Compound") or ""
-        lang = item.get("lang") or item.get("language") or "en"
+        lang = str(item.get("lang") or item.get("language") or "en")
         is_pv = bool(item.get("is_pv", False)) or (target_name == "pv")
+        is_aux = bool(item.get("is_aux", False))
         filename = item.get("filename") or item.get("file") or ""
 
         # Construct semantic prompt
@@ -70,25 +84,37 @@ class ClozePromptDataset(Dataset):
             mask_token=self.mask_token,
         )
 
-        # Tokenize prompt sequence
+        # Tokenize prompt sequence with special guarantee that [MASK] is never truncated
         encoding = self.tokenizer(
             prompt_text,
-            truncation=True,
-            max_length=self.max_length,
+            truncation=False,
             padding=False,
             return_tensors=None,
         )
-
         input_ids = encoding["input_ids"]
         attention_mask = encoding["attention_mask"]
+
+        if len(input_ids) > self.max_length:
+            # If sequence exceeds max_length, truncate tokens from the context sentence (middle),
+            # never from the prompt suffix which contains [MASK]
+            try:
+                raw_mask_pos = input_ids.index(self.mask_token_id)
+                # Keep the suffix containing [MASK] and special ending token
+                suffix_len = len(input_ids) - raw_mask_pos + 1
+                available_for_prefix = max(10, self.max_length - suffix_len)
+                input_ids = input_ids[:available_for_prefix] + input_ids[raw_mask_pos - 1:]
+                attention_mask = [1] * len(input_ids)
+            except ValueError:
+                input_ids = input_ids[:self.max_length]
+                attention_mask = attention_mask[:self.max_length]
 
         # Locate the exact position of the [MASK] token
         try:
             mask_pos = input_ids.index(self.mask_token_id)
         except ValueError:
-            # Fallback if truncated: replace the last non-special token with [MASK]
             mask_pos = max(1, len(input_ids) - 2)
             input_ids[mask_pos] = self.mask_token_id
+
 
         # Target rating / label if available
         if label is None or not (isinstance(label, (int, float)) and not (isinstance(label, float) and (label != label))):
@@ -98,14 +124,18 @@ class ClozePromptDataset(Dataset):
             label_val = float(label)
             has_label = True
 
+        std_val = float(std) if std is not None and isinstance(std, (int, float)) and not (isinstance(std, float) and std != std) else float("nan")
+
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "mask_index": mask_pos,
             "label": label_val,
+            "std": std_val,
             "has_label": has_label,
             "target": target_name or "mod",
             "lang": lang,
+            "is_aux": is_aux,
             "sem_type": sem_type,
         }
 
@@ -114,15 +144,29 @@ def collate_cloze_batch(
     batch: List[Dict[str, Any]],
     tokenizer: PreTrainedTokenizerBase,
 ) -> Dict[str, Any]:
-    """Collates a list of ClozePromptDataset items into padded tensors."""
+    """Collates a list of ClozePromptDataset items into padded tensors.
+    
+    All dictionary fields are returned as torch.Tensor to ensure batch.items() .to(device)
+    never crashes on string lists.
+    """
     input_ids_list = [item["input_ids"] for item in batch]
     attention_mask_list = [item["attention_mask"] for item in batch]
     mask_indices = [item["mask_index"] for item in batch]
     labels = [item["label"] for item in batch]
+    stds = [item["std"] for item in batch]
     has_labels = [item["has_label"] for item in batch]
-    targets = [item["target"] for item in batch]
-    langs = [item["lang"] for item in batch]
-    sem_types = [item["sem_type"] for item in batch]
+    is_auxs = [item["is_aux"] for item in batch]
+
+    # Target codes: 0 = mod, 1 = head, 2 = pv
+    target_map = {"mod": 0, "head": 1, "pv": 2}
+    target_codes = [target_map.get(item["target"], 0) for item in batch]
+
+    # Lang codes: 0 = en, 1 = de
+    lang_codes = [1 if str(item["lang"]).lower().startswith("de") else 0 for item in batch]
+
+    # Semantic type codes: 0 = compound, 1 = bare_lemma, 2 = particle_verb
+    sem_map = {"compound": 0, "bare_lemma": 1, "particle_verb": 2}
+    sem_codes = [sem_map.get(item["sem_type"], 0) for item in batch]
 
     # Dynamic padding to max sequence length in this batch
     padded = tokenizer.pad(
@@ -136,8 +180,11 @@ def collate_cloze_batch(
         "attention_mask": padded["attention_mask"],
         "mask_indices": torch.tensor(mask_indices, dtype=torch.long),
         "labels": torch.tensor(labels, dtype=torch.float32),
+        "stds": torch.tensor(stds, dtype=torch.float32),
         "has_label": torch.tensor(has_labels, dtype=torch.bool),
-        "targets": targets,
-        "langs": langs,
-        "sem_types": sem_types,
+        "is_aux": torch.tensor(is_auxs, dtype=torch.bool),
+        "target": torch.tensor(target_codes, dtype=torch.long),
+        "lang_code": torch.tensor(lang_codes, dtype=torch.long),
+        "sem_type_code": torch.tensor(sem_codes, dtype=torch.long),
     }
+

@@ -523,12 +523,29 @@ class Trainer:
             rho_pv_de = _safe_rho(val_mod_y[de_pv_mask], val_pv[de_pv_mask]) if de_pv_mask.any() else 0.0
             rho_pv_en = _safe_rho(val_mod_y[en_pv_mask], val_pv[en_pv_mask]) if en_pv_mask.any() else 0.0
 
-            if pv_mask.any() and nn_mask.any():
+            # Per-lineage macro evaluation (en-nn, de-nn, en-pv, de-pv)
+            # Lines belong to lineages: en-nn (NN mod/head en), de-nn (NN mod/head de), en-pv (PV en), de-pv (PV de)
+            lineage_rhos = []
+            en_nn_mask = nn_mod_mask & (lang_arr == 'en')
+            if en_nn_mask.any():
+                lineage_rhos.append(_safe_rho(val_mod_y[en_nn_mask], val_mod[en_nn_mask]))
+            de_nn_mask = nn_mod_mask & (lang_arr == 'de')
+            if de_nn_mask.any():
+                lineage_rhos.append(_safe_rho(val_mod_y[de_nn_mask], val_mod[de_nn_mask]))
+            if en_pv_mask.any():
+                lineage_rhos.append(rho_pv_en)
+            if de_pv_mask.any():
+                lineage_rhos.append(rho_pv_de)
+
+            if len(lineage_rhos) >= 2:
+                rho_mean = float(np.mean(lineage_rhos))
+            elif pv_mask.any() and nn_mask.any():
                 rho_mean = (rho_mod + rho_head + rho_pv) / 3.0
             elif pv_mask.any():
                 rho_mean = rho_pv
             else:
                 rho_mean = (rho_mod + rho_head) / 2.0
+
 
             # --- Diagnostics: Raw Prototype-Context Cosine vs Gold Labels ---
             val_mod_cos = val_diag['mod_cos']

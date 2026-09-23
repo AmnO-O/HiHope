@@ -170,7 +170,7 @@ def apply_lora(model: nn.Module, rank: int = 8, alpha: int = 16,
                 # wrap). The backbone module root is ``lm`` in the downstream
                 # combined model but ``model`` in an AutoModelForMaskedLM
                 # (ModernBERT); both are pretrained and wrappable.
-                if full and full.split('.', 1)[0] not in ('lm', 'model'):
+                if full and full.split('.', 1)[0] not in ('lm', 'model', 'mlm'):
                     continue
                 layer = _layer_idx(full)
                 if layer is not None and layer < from_layer:

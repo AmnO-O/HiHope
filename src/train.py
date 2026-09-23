@@ -122,10 +122,11 @@ def train_epoch(model, dataloader, optimizer, scheduler, criterion, scaler, devi
                 mod_loss = head_loss = pv_loss = torch.tensor(0.0, device=device)
                 loss = torch.tensor(0.0, device=device)
             elif 'labels' in batch:
-                # Direct Cloze Prompt supervision
+                # Direct Cloze Prompt supervision with aux weighting and label uncertainty
                 loss = criterion(
-                    mod_pred, batch['labels'], None, None,
+                    mod_pred, batch['labels'], mod_logits, batch.get('stds'),
                     mask=batch.get('has_label', torch.ones_like(mod_pred, dtype=torch.bool)),
+                    weight=aux_w,
                 )
                 mod_loss = head_loss = pv_loss = loss / 3.0
             else:

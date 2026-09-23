@@ -88,7 +88,7 @@ class ClozeCompositionalityModel(nn.Module):
         )
 
     def _cache_verbalizer_ids(self) -> None:
-        """Cache tokenizer token IDs for literal and figurative verbalizer vocabulary."""
+        """Cache tokenizer token ID sequences for literal and figurative verbalizer vocabulary."""
         assert self.tokenizer is not None
         for lang, words_dict in VERBALIZER_TOKENS.items():
             self.verbalizer_ids[lang] = {"literal": [], "figurative": []}
@@ -96,16 +96,18 @@ class ClozeCompositionalityModel(nn.Module):
                 for word in words_dict[polarity]:
                     ids = self.tokenizer.encode(word, add_special_tokens=False)
                     if ids:
-                        # Use first subword token
-                        self.verbalizer_ids[lang][polarity].append(ids[0])
+                        # Store all subword token ids for full coverage
+                        self.verbalizer_ids[lang][polarity].extend(ids)
+                # Deduplicate
+                self.verbalizer_ids[lang][polarity] = sorted(list(set(self.verbalizer_ids[lang][polarity])))
 
     def compute_verbalizer_prior(
         self,
         mask_logits: torch.Tensor,
         lang_list: Optional[List[str]] = None,
     ) -> torch.Tensor:
-        """Compute the verbalizer logit difference:
-        Delta_verb = mean(logits[literal_tokens]) - mean(logits[figurative_tokens])
+        """Compute the verbalizer logit difference via logsumexp over candidate tokens:
+        Delta_verb = logsumexp(logits[literal_tokens]) - logsumexp(logits[figurative_tokens])
         
         Args:
             mask_logits: [B, VocabSize] MLM prediction logits at the [MASK] position.
@@ -126,8 +128,8 @@ class ClozeCompositionalityModel(nn.Module):
             fig_ids = self.verbalizer_ids.get(lang_key, {}).get("figurative", [])
 
             if lit_ids and fig_ids:
-                lit_logit = mask_logits[i, lit_ids].mean()
-                fig_logit = mask_logits[i, fig_ids].mean()
+                lit_logit = torch.logsumexp(mask_logits[i, lit_ids], dim=-1)
+                fig_logit = torch.logsumexp(mask_logits[i, fig_ids], dim=-1)
                 diffs.append(lit_logit - fig_logit)
             else:
                 diffs.append(torch.tensor(0.0, device=mask_logits.device, dtype=mask_logits.dtype))
@@ -135,6 +137,7 @@ class ClozeCompositionalityModel(nn.Module):
         delta = torch.stack(diffs, dim=0).unsqueeze(-1)
         # Normalize with tanh to keep features nicely bounded between -1.0 and 1.0
         return torch.tanh(delta)
+
 
     def forward(
         self,
@@ -183,6 +186,14 @@ class ClozeCompositionalityModel(nn.Module):
         # 4. Predict continuous Gaussian distribution parameters
         mu, sigma = self.head(feature_vector)
         pred = mu.squeeze(-1) if mu.dim() > 1 else mu
+        sig = sigma.squeeze(-1) if sigma.dim() > 1 else sigma
+
+        if with_logits:
+            # GaussLoss expects 6-tuple: (mod, head, pv, mod_logits, head_logits, pv_logits)
+            # where logits channel holds predicted sigma
+            if with_pv:
+                return pred, pred, pred, sig, sig, sig
+            return pred, pred, sig, sig
 
         if with_pv:
             # In single-target cloze evaluation, pred acts as the active target pred

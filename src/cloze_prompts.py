@@ -84,20 +84,29 @@ def build_cloze_prompt(
 
     if l == "de":
         if sem_type == "bare_lemma":
-            # Avoid vacuous "abbiegen in abbiegen"
-            prompt = f'Ziel: "{w}". Satz: "{s}". In diesem Satz wird das Wort "{w}" im {mask_token} Sinne verwendet.'
+            prefix = f'Ziel: "{w}". '
+            suffix = f' In diesem Satz wird das Wort "{w}" im {mask_token} Sinne verwendet.'
         elif sem_type == "particle_verb":
             target = c if c else w
-            prompt = f'Ziel: "{target}". Satz: "{s}". In diesem Satz ist der Ausdruck "{target}" {mask_token}.'
+            prefix = f'Ziel: "{target}". '
+            suffix = f' In diesem Satz ist der Ausdruck "{target}" {mask_token}.'
         else:  # compound
-            prompt = f'Ziel: "{w}" in "{c}". Satz: "{s}". In diesem Satz ist das Wort "{w}" {mask_token}.'
+            prefix = f'Ziel: "{w}" in "{c}". '
+            suffix = f' In diesem Satz ist das Wort "{w}" {mask_token}.'
+        sent_carrier = f'Satz: "{s}".'
     else:  # en
         if sem_type == "bare_lemma":
-            prompt = f'Target: "{w}". Sentence: "{s}". In this sentence, the word "{w}" is used in a {mask_token} sense.'
+            prefix = f'Target: "{w}". '
+            suffix = f' In this sentence, the word "{word}" is used in a {mask_token} sense.'
         elif sem_type == "particle_verb":
             target = c if c else w
-            prompt = f'Target: "{target}". Sentence: "{s}". In this sentence, the expression "{target}" is {mask_token}.'
+            prefix = f'Target: "{target}". '
+            suffix = f' In this sentence, the expression "{target}" is {mask_token}.'
         else:  # compound
-            prompt = f'Target: "{w}" in "{c}". Sentence: "{s}". In this sentence, the word "{w}" is {mask_token}.'
+            prefix = f'Target: "{w}" in "{c}". '
+            suffix = f' In this sentence, the word "{w}" is {mask_token}.'
+        sent_carrier = f'Sentence: "{s}".'
 
+    prompt = f"{prefix}{sent_carrier}{suffix}"
     return prompt, sem_type
+
