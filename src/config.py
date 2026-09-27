@@ -74,18 +74,67 @@ class Config:
     use_label_std: bool = True
     kl_weight: float = 1.0
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any], strict: bool = False) -> Config:
+        valid_keys = {f.name for f in fields(cls)}
+        filtered = {k: v for k, v in d.items() if k in valid_keys}
+        return cls(**filtered)
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> Config:
+        with open(path, 'r', encoding='utf-8') as f:
+            return cls.from_dict(json.load(f))
+
+    def save(self, path: str | Path) -> None:
+        save_config(self, path)
+
+    def validate(self) -> None:
+        assert self.backbone, "Backbone must not be empty"
+        assert self.batch_size > 0, "Batch size must be positive"
+
+    def build_tokenizer(self):
+        """Construct HuggingFace AutoTokenizer for configured backbone."""
+        from transformers import AutoTokenizer
+        return AutoTokenizer.from_pretrained(self.backbone)
+
+
+def coerce_value(key: str, val: str | Any) -> Any:
+    """Coerce string value from CLI --set key=value into appropriate Python types."""
+    if not isinstance(val, str):
+        return val
+    v_str = val.strip()
+    if v_str.lower() in ('true', 'yes', 'on'):
+        return True
+    if v_str.lower() in ('false', 'no', 'off'):
+        return False
+    if v_str.lower() in ('none', 'null'):
+        return None
+    try:
+        return int(v_str)
+    except ValueError:
+        pass
+    try:
+        return float(v_str)
+    except ValueError:
+        pass
+    if (v_str.startswith('[') and v_str.endswith(']')) or (v_str.startswith('{') and v_str.endswith('}')):
+        try:
+            return json.loads(v_str)
+        except Exception:
+            pass
+    if key in ('targets',) and ',' in v_str:
+        return [item.strip() for item in v_str.split(',')]
+    return v_str
+
 
 def config_from_dict(d: Dict[str, Any]) -> Config:
     """Construct a Config dataclass from a raw dictionary."""
-    valid_keys = {f.name for f in fields(Config)}
-    filtered = {k: v for k, v in d.items() if k in valid_keys}
-    return Config(**filtered)
+    return Config.from_dict(d)
 
 
 def config_from_json(path: str | Path) -> Config:
     """Load Config from a JSON file."""
-    with open(path, 'r', encoding='utf-8') as f:
-        return config_from_dict(json.load(f))
+    return Config.from_json(path)
 
 
 def save_config(cfg: Config, path: str | Path) -> None:
