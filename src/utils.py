@@ -13,6 +13,35 @@ import numpy as np
 
 from src.config import Config
 
+
+def patch_transformers_rope() -> None:
+    """Patch HuggingFace transformers ROPE_INIT_FUNCTIONS for EuroBERT compatibility.
+    
+    In recent versions of transformers (v4.45+), ROPE_INIT_FUNCTIONS does not contain
+    the 'default' key, which EuroBERT's custom modeling_eurobert.py expects.
+    This monkey-patches 'default' to point to _compute_default_rope_parameters.
+    """
+    try:
+        import transformers.modeling_rope_utils as rope_utils
+        if hasattr(rope_utils, "ROPE_INIT_FUNCTIONS"):
+            if "default" not in rope_utils.ROPE_INIT_FUNCTIONS:
+                for fn_name in [
+                    "_compute_default_rope_parameters",
+                    "compute_default_rope_parameters",
+                    "_compute_standard_rope_parameters",
+                ]:
+                    if hasattr(rope_utils, fn_name):
+                        rope_utils.ROPE_INIT_FUNCTIONS["default"] = getattr(rope_utils, fn_name)
+                        break
+                if "default" not in rope_utils.ROPE_INIT_FUNCTIONS and len(rope_utils.ROPE_INIT_FUNCTIONS) > 0:
+                    rope_utils.ROPE_INIT_FUNCTIONS["default"] = list(rope_utils.ROPE_INIT_FUNCTIONS.values())[0]
+    except Exception:
+        pass
+
+
+# Auto-apply patch on import
+patch_transformers_rope()
+
 _LOG_FORMAT = '%(asctime)s | %(levelname)-7s | %(message)s'
 _LOG_DATE = '%H:%M:%S'
 

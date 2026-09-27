@@ -273,6 +273,9 @@ class TargetAwareQueryAttentionModel(nn.Module):
         self.use_rms_norm = use_rms_norm
 
         # Layer 0: Encoder & Role Embeddings
+        from src.utils import patch_transformers_rope
+        patch_transformers_rope()
+
         self.lm = AutoModel.from_pretrained(backbone, trust_remote_code=True)
         # Auto-detect hidden size from backbone config
         detected_dim = getattr(self.lm.config, 'hidden_size', None) or getattr(self.lm.config, 'd_model', None)
