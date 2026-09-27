@@ -9,9 +9,21 @@ import torch.nn.functional as F
 SIGMA_FLOOR = 0.04
 
 
+class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization (RMSNorm)."""
+    def __init__(self, hidden_size: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        variance = x.pow(2).mean(-1, keepdim=True)
+        return self.weight * (x * torch.rsqrt(variance + self.eps))
+
+
 class GaussHead(nn.Module):
     """Deviated Gaussian head chuẩn hóa: 
-    - Trunk MLP dày hơn với LayerNorm + GELU
+    - Trunk MLP với LayerNorm / RMSNorm + GELU
     - Tách riêng 2 nhánh chuyên biệt cho Mu và Sigma
     - Khởi tạo Bias thông minh giúp NLL Loss ổn định ngay từ Epoch 0
     """
@@ -25,6 +37,7 @@ class GaussHead(nn.Module):
         init_sigma: float = 0.5,
         hidden_dim: Optional[int] = None,
         sigma_floor: Optional[float] = None,
+        use_rms_norm: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -34,10 +47,12 @@ class GaussHead(nn.Module):
             floor = sigma_floor
         self.floor = floor
 
+        norm_layer = RMSNorm(hidden) if use_rms_norm else nn.LayerNorm(hidden)
+
         # Trunk chung: Chiếu vector Transformer về không gian ẩn sạch sẽ
         self.trunk = nn.Sequential(
             nn.Linear(in_features, hidden),
-            nn.LayerNorm(hidden),
+            norm_layer,
             nn.GELU(),
             nn.Dropout(dropout) if dropout > 0 else nn.Identity(),
         )

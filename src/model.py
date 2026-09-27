@@ -42,6 +42,8 @@ def build_model(cfg, device, load_from: Optional[str | Path] = None) -> nn.Modul
         dropout=cfg.dropout,
         shared_head=bool(getattr(cfg, 'shared_head', True)),
         sigma_floor=float(getattr(cfg, 'sigma_floor', 0.04)),
+        use_pre_ln=bool(getattr(cfg, 'use_pre_ln', True)),
+        use_rms_norm=bool(getattr(cfg, 'use_rms_norm', True)),
     )
     if load_from is not None:
         load_from = Path(load_from)

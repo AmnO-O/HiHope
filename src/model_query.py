@@ -84,17 +84,45 @@ from .constants import SCORE_MAX, SCORE_MIN
 from .heads import GaussHead
 
 
+class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization (RMSNorm).
+    
+    Reference: Zhang & Sennrich (2019) 'Root Mean Square Layer Normalization'.
+    """
+    def __init__(self, hidden_size: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        variance = x.pow(2).mean(-1, keepdim=True)
+        return self.weight * (x * torch.rsqrt(variance + self.eps))
+
+
+def create_norm(hidden_size: int, use_rms_norm: bool = True, eps: float = 1e-6) -> nn.Module:
+    return RMSNorm(hidden_size, eps=eps) if use_rms_norm else nn.LayerNorm(hidden_size, eps=eps)
+
+
 class TargetAwareCrossAttention(nn.Module):
     """Layer 1: Target-Aware Multi-Head Cross-Attention (MHCA).
     
     Probes in-context representation H_final using 3 learned query vectors
-    [q_Mod, q_Head, q_Compound]. Produces interpretability attention map A in [B, 3, S].
+    [q_Mod, q_Head, q_Compound]. Supports Pre-LN and RMSNorm.
     """
 
-    def __init__(self, hidden_size: int = 768, num_heads: int = 8, dropout: float = 0.1):
+    def __init__(
+        self,
+        hidden_size: int = 768,
+        num_heads: int = 8,
+        dropout: float = 0.1,
+        use_pre_ln: bool = True,
+        use_rms_norm: bool = True,
+    ):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_heads = num_heads
+        self.use_pre_ln = use_pre_ln
+        self.use_rms_norm = use_rms_norm
         
         # 3 Learned Probing Queries: [q_Mod, q_Head, q_Compound]
         self.q_base = nn.Parameter(torch.empty(3, hidden_size))
@@ -106,7 +134,9 @@ class TargetAwareCrossAttention(nn.Module):
             dropout=dropout,
             batch_first=True,
         )
-        self.norm = nn.LayerNorm(hidden_size)
+        self.norm_q = create_norm(hidden_size, use_rms_norm=use_rms_norm)
+        self.norm_kv = create_norm(hidden_size, use_rms_norm=use_rms_norm) if use_pre_ln else None
+        self.post_norm = create_norm(hidden_size, use_rms_norm=use_rms_norm) if not use_pre_ln else None
         self.dropout = nn.Dropout(dropout)
 
     def forward(
@@ -131,18 +161,29 @@ class TargetAwareCrossAttention(nn.Module):
         if attention_mask is not None:
             key_padding_mask = (attention_mask == 0)
 
-        # Multi-Head Cross-Attention
-        z_attn, attn_weights = self.mha(
-            query=q,
-            key=h_final,
-            value=h_final,
-            key_padding_mask=key_padding_mask,
-            need_weights=True,
-            average_attn_weights=True,  # [B, 3, S]
-        )
+        if self.use_pre_ln:
+            q_in = self.norm_q(q)
+            kv_in = self.norm_kv(h_final) if self.norm_kv is not None else h_final
+            z_attn, attn_weights = self.mha(
+                query=q_in,
+                key=kv_in,
+                value=h_final,
+                key_padding_mask=key_padding_mask,
+                need_weights=True,
+                average_attn_weights=True,  # [B, 3, S]
+            )
+            z = q + self.dropout(z_attn)
+        else:
+            z_attn, attn_weights = self.mha(
+                query=q,
+                key=h_final,
+                value=h_final,
+                key_padding_mask=key_padding_mask,
+                need_weights=True,
+                average_attn_weights=True,  # [B, 3, S]
+            )
+            z = self.post_norm(q + self.dropout(z_attn))
 
-        # Residual connection + LayerNorm: Z = LayerNorm(Q + Dropout(Z_attn))
-        z = self.norm(q + self.dropout(z_attn))
         return z, attn_weights
 
 
@@ -153,15 +194,24 @@ class ComponentInteractionLayer(nn.Module):
     (Mod <-> Head <-> Compound) to capture compositional and boundary interactions.
     """
 
-    def __init__(self, hidden_size: int = 768, num_heads: int = 4, dropout: float = 0.1):
+    def __init__(
+        self,
+        hidden_size: int = 768,
+        num_heads: int = 4,
+        dropout: float = 0.1,
+        use_pre_ln: bool = True,
+        use_rms_norm: bool = True,
+    ):
         super().__init__()
+        self.use_pre_ln = use_pre_ln
+        self.use_rms_norm = use_rms_norm
         self.self_mha = nn.MultiheadAttention(
             embed_dim=hidden_size,
             num_heads=num_heads,
             dropout=dropout,
             batch_first=True,
         )
-        self.norm = nn.LayerNorm(hidden_size)
+        self.norm = create_norm(hidden_size, use_rms_norm=use_rms_norm)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -172,14 +222,26 @@ class ComponentInteractionLayer(nn.Module):
             z_prime: [B, 3, H] updated compositional representations
             self_attn_weights: [B, 3, 3] interaction weights
         """
-        z_self, self_attn_weights = self.self_mha(
-            query=z,
-            key=z,
-            value=z,
-            need_weights=True,
-            average_attn_weights=True,
-        )
-        z_prime = self.norm(z + self.dropout(z_self))
+        if self.use_pre_ln:
+            z_in = self.norm(z)
+            z_self, self_attn_weights = self.self_mha(
+                query=z_in,
+                key=z_in,
+                value=z,
+                need_weights=True,
+                average_attn_weights=True,
+            )
+            z_prime = z + self.dropout(z_self)
+        else:
+            z_self, self_attn_weights = self.self_mha(
+                query=z,
+                key=z,
+                value=z,
+                need_weights=True,
+                average_attn_weights=True,
+            )
+            z_prime = self.norm(z + self.dropout(z_self))
+
         return z_prime, self_attn_weights
 
 
@@ -198,6 +260,8 @@ class TargetAwareQueryAttentionModel(nn.Module):
         shared_head: bool = True,
         sigma_floor: float = 0.04,
         scale_target_5x: bool = True,
+        use_pre_ln: bool = True,
+        use_rms_norm: bool = True,
     ):
         super().__init__()
         self.backbone_name = backbone
@@ -205,6 +269,8 @@ class TargetAwareQueryAttentionModel(nn.Module):
         self.scale_target_5x = scale_target_5x
         self.sigma_floor = sigma_floor
         self.shared_head = shared_head
+        self.use_pre_ln = use_pre_ln
+        self.use_rms_norm = use_rms_norm
 
         # Layer 0: Encoder & Role Embeddings
         self.lm = AutoModel.from_pretrained(backbone)
@@ -217,6 +283,8 @@ class TargetAwareQueryAttentionModel(nn.Module):
             hidden_size=hidden_size,
             num_heads=num_cross_heads,
             dropout=dropout,
+            use_pre_ln=use_pre_ln,
+            use_rms_norm=use_rms_norm,
         )
 
         # Layer 2: Component Interaction Layer
@@ -224,7 +292,12 @@ class TargetAwareQueryAttentionModel(nn.Module):
             hidden_size=hidden_size,
             num_heads=num_self_heads,
             dropout=dropout,
+            use_pre_ln=use_pre_ln,
+            use_rms_norm=use_rms_norm,
         )
+
+        # Final Pre-LN Normalization before GaussHead
+        self.final_norm = create_norm(hidden_size, use_rms_norm=use_rms_norm) if use_pre_ln else nn.Identity()
 
         # Layer 3: GaussHead Regression
         if shared_head:
@@ -233,11 +306,12 @@ class TargetAwareQueryAttentionModel(nn.Module):
                 hidden=head_hidden,
                 dropout=dropout,
                 floor=sigma_floor,
+                use_rms_norm=use_rms_norm,
             )
         else:
-            self._head_mod = GaussHead(in_features=hidden_size, hidden=head_hidden, dropout=dropout, floor=sigma_floor)
-            self._head_head = GaussHead(in_features=hidden_size, hidden=head_hidden, dropout=dropout, floor=sigma_floor)
-            self._head_comp = GaussHead(in_features=hidden_size, hidden=head_hidden, dropout=dropout, floor=sigma_floor)
+            self._head_mod = GaussHead(in_features=hidden_size, hidden=head_hidden, dropout=dropout, floor=sigma_floor, use_rms_norm=use_rms_norm)
+            self._head_head = GaussHead(in_features=hidden_size, hidden=head_hidden, dropout=dropout, floor=sigma_floor, use_rms_norm=use_rms_norm)
+            self._head_comp = GaussHead(in_features=hidden_size, hidden=head_hidden, dropout=dropout, floor=sigma_floor, use_rms_norm=use_rms_norm)
 
         # Interpretability caches
         self.last_cross_attn_map: Optional[torch.Tensor] = None
@@ -263,6 +337,8 @@ class TargetAwareQueryAttentionModel(nn.Module):
             self.cross_attn,
             self.component_interaction,
         ]
+        if isinstance(self.final_norm, nn.Module) and not isinstance(self.final_norm, nn.Identity):
+            modules.append(self.final_norm)
         if self.shared_head:
             modules.append(self._head)
         else:
@@ -325,13 +401,14 @@ class TargetAwareQueryAttentionModel(nn.Module):
 
         # --- LAYER 2: COMPONENT INTERACTION LAYER ---
         z_prime, comp_attn_map = self.component_interaction(z)  # [B, 3, 768], [B, 3, 3]
+        z_out = self.final_norm(z_prime)
 
         # Cache for interpretability / visualizers
         self.last_cross_attn_map = cross_attn_map.detach()
         self.last_component_attn_map = comp_attn_map.detach()
-        self.last_slot_representations = z_prime.detach()
+        self.last_slot_representations = z_out.detach()
 
-        return z_prime, cross_attn_map, comp_attn_map
+        return z_out, cross_attn_map, comp_attn_map
 
     def forward(
         self,

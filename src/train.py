@@ -23,14 +23,27 @@ def _safe_rho(y: np.ndarray, p: np.ndarray) -> float:
 
 
 def unfreeze_top_layers(model: nn.Module, num_layers: int = 4) -> None:
-    """Unfreeze the top N transformer layers of the backbone."""
+    """Unfreeze the top N transformer layers of the backbone (or all if num_layers=-1)."""
+    if num_layers == 0:
+        return
+    if num_layers < 0:
+        # Unfreeze entire backbone
+        for param in model.lm.parameters():
+            param.requires_grad = True
+        return
+
     encoder = getattr(model.lm, 'encoder', model.lm)
     layers = getattr(encoder, 'layer', None) or getattr(encoder, 'layers', None)
     if layers is not None:
         total = len(layers)
-        for i in range(max(0, total - num_layers), total):
+        start_idx = max(0, total - num_layers)
+        for i in range(start_idx, total):
             for param in layers[i].parameters():
                 param.requires_grad = True
+    else:
+        # Fallback for models without explicit layer container
+        for param in model.lm.parameters():
+            param.requires_grad = True
 
 
 def train_epoch(

@@ -11,6 +11,8 @@
   "num_self_heads": 4,
   "shared_head": true,
   "sigma_floor": 0.04,
+  "use_pre_ln": true,
+  "use_rms_norm": true,
   "max_context_length": 256,
   "en_nn_train": "en-nn-train.tsv",
   "de_nn_train": "de-nn-train.tsv",

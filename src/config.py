@@ -33,6 +33,8 @@ class Config:
     num_self_heads: int = 4
     shared_head: bool = True
     sigma_floor: float = 0.04
+    use_pre_ln: bool = True       # Pre-LN architecture for stable gradient flow
+    use_rms_norm: bool = True     # RMSNorm (Root Mean Square Layer Normalization)
 
     # === data / paths ===
     data_path: Optional[str] = None
@@ -59,6 +61,7 @@ class Config:
     # === training phases ===
     freeze_epochs: int = 3
     unfreeze_epochs: int = 9
+    unfreeze_layers: int = 4      # Number of top transformer layers to unfreeze (4 for top-4, -1 for all)
     targets: List[str] = field(default_factory=lambda: ['mod', 'head', 'pv'])
 
     # Optimization

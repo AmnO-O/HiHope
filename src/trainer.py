@@ -134,8 +134,9 @@ class Trainer:
                 best_preds = (rho_mod, rho_head, rho_pv, m_preds, h_preds, m_lbls, h_lbls)
 
         # --- Phase 2: Unfreeze top layers ---
-        self.logger.info("Starting Phase 2 (Fine-Tuning Top Layers): %d epochs", self.cfg.unfreeze_epochs)
-        unfreeze_top_layers(model, num_layers=4)
+        unfreeze_n = getattr(self.cfg, 'unfreeze_layers', 4)
+        self.logger.info("Starting Phase 2 (Fine-Tuning %s Layers): %d epochs", "All" if unfreeze_n < 0 else f"Top-{unfreeze_n}", self.cfg.unfreeze_epochs)
+        unfreeze_top_layers(model, num_layers=unfreeze_n)
         
         backbone_params = [p for p in model.lm.parameters() if p.requires_grad]
         optimizer = AdamW([
