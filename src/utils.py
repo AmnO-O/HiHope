@@ -14,27 +14,31 @@ import numpy as np
 from src.config import Config
 
 
+def _default_rope_init_fn(config=None, device=None, seq_len=None, **kwargs):
+    """Standalone standard RoPE inverse frequency computation compatible with EuroBERT."""
+    import torch
+    dim = getattr(config, "head_dim", None)
+    if dim is None:
+        hidden_size = getattr(config, "hidden_size", 768)
+        num_heads = getattr(config, "num_attention_heads", 12)
+        dim = int(hidden_size / num_heads)
+    base = float(getattr(config, "rope_theta", 10000.0) or 10000.0)
+    inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.int64).float().to(device) / dim))
+    attention_scaling = 1.0
+    return inv_freq, attention_scaling
+
+
 def patch_transformers_rope() -> None:
     """Patch HuggingFace transformers ROPE_INIT_FUNCTIONS for EuroBERT compatibility.
     
     In recent versions of transformers (v4.45+), ROPE_INIT_FUNCTIONS does not contain
     the 'default' key, which EuroBERT's custom modeling_eurobert.py expects.
-    This monkey-patches 'default' to point to _compute_default_rope_parameters.
+    This explicitly registers the standard rotary embedding initializer under 'default'.
     """
     try:
         import transformers.modeling_rope_utils as rope_utils
         if hasattr(rope_utils, "ROPE_INIT_FUNCTIONS"):
-            if "default" not in rope_utils.ROPE_INIT_FUNCTIONS:
-                for fn_name in [
-                    "_compute_default_rope_parameters",
-                    "compute_default_rope_parameters",
-                    "_compute_standard_rope_parameters",
-                ]:
-                    if hasattr(rope_utils, fn_name):
-                        rope_utils.ROPE_INIT_FUNCTIONS["default"] = getattr(rope_utils, fn_name)
-                        break
-                if "default" not in rope_utils.ROPE_INIT_FUNCTIONS and len(rope_utils.ROPE_INIT_FUNCTIONS) > 0:
-                    rope_utils.ROPE_INIT_FUNCTIONS["default"] = list(rope_utils.ROPE_INIT_FUNCTIONS.values())[0]
+            rope_utils.ROPE_INIT_FUNCTIONS["default"] = _default_rope_init_fn
     except Exception:
         pass
 

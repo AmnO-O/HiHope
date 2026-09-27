@@ -59,13 +59,19 @@ class Trainer:
         train_ds = CompDataset(train_rows, tokenizer, max_len=self.cfg.max_context_length)
         val_ds = CompDataset(val_rows, tokenizer, max_len=self.cfg.max_context_length)
 
+        pad_id = getattr(tokenizer, 'pad_token_id', 0)
+        if pad_id is None:
+            pad_id = 0
+
         train_loader = DataLoader(
             train_ds, batch_size=self.cfg.batch_size, shuffle=True,
-            collate_fn=collate_comp, pin_memory=torch.cuda.is_available()
+            collate_fn=lambda b: collate_comp(b, pad_token_id=pad_id),
+            pin_memory=torch.cuda.is_available()
         )
         val_loader = DataLoader(
             val_ds, batch_size=self.cfg.eval_batch_size, shuffle=False,
-            collate_fn=collate_comp, pin_memory=torch.cuda.is_available()
+            collate_fn=lambda b: collate_comp(b, pad_token_id=pad_id),
+            pin_memory=torch.cuda.is_available()
         )
         return train_loader, val_loader
 
