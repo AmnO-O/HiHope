@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from dataclasses import dataclass
@@ -96,7 +97,8 @@ class Trainer:
 
         best_rho = -1.0
         best_epoch = 0
-        best_ckpt = self.output_dir / f'best_model_fold_{fold or 0}.pt'
+        tag = f"_fold_{fold}" if fold is not None else ""
+        best_ckpt = self.output_dir / f'best_model{tag}.pt'
         history: List[Dict] = []
         best_preds = None
 
@@ -158,24 +160,32 @@ class Trainer:
             best_preds = (0.0, 0.0, 0.0, np.array([]), np.array([]), np.array([]), np.array([]))
 
         # Save final epoch checkpoint
-        final_ckpt = self.output_dir / f'final_model_fold_{fold or 0}.pt'
+        final_ckpt = self.output_dir / f'final_model{tag}.pt'
         torch.save(model.state_dict(), final_ckpt)
         self.logger.info("Saved final epoch checkpoint to %s", final_ckpt)
 
         # Save training history and summary
-        summary_path = self.output_dir / f'training_summary_fold_{fold or 0}.json'
+        summary_path = self.output_dir / f'training_summary{tag}.json'
+        summary_dict = {
+            'fold': fold,
+            'best_epoch': best_epoch,
+            'best_rho_mean': float(best_rho),
+            'best_rho_mod': float(best_preds[0]),
+            'best_rho_head': float(best_preds[1]),
+            'best_rho_pv': float(best_preds[2]),
+            'best_ckpt': str(best_ckpt),
+            'final_ckpt': str(final_ckpt),
+            'history': history,
+        }
         with open(summary_path, 'w', encoding='utf-8') as f:
-            json.dump({
-                'fold': fold,
-                'best_epoch': best_epoch,
-                'best_rho_mean': float(best_rho),
-                'best_rho_mod': float(best_preds[0]),
-                'best_rho_head': float(best_preds[1]),
-                'best_rho_pv': float(best_preds[2]),
-                'best_ckpt': str(best_ckpt),
-                'final_ckpt': str(final_ckpt),
-                'history': history,
-            }, f, indent=2)
+            json.dump(summary_dict, f, indent=2)
+
+        # Also provide alias copies for seamless compatibility across scripts
+        if fold == 0 or fold is None:
+            torch.save(model.state_dict(), self.output_dir / 'final_model.pt')
+            if best_ckpt.exists():
+                torch.save(torch.load(best_ckpt, weights_only=True), self.output_dir / 'best_model.pt')
+                torch.save(torch.load(best_ckpt, weights_only=True), self.output_dir / 'best_model_fold_0.pt')
 
         return FoldResult(
             fold=fold,

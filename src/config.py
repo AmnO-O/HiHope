@@ -44,6 +44,8 @@ class Config:
     de_nn_train: str = 'de-nn-train.tsv'
     en_pv_train: str = 'en-pv-train.tsv'
     de_pv_train: str = 'de-pv-train.tsv'
+    train_aux: Optional[str] = None
+    use_aux: bool = False
 
     # Multi-task Trial Datasets (EN / DE)
     en_nn_trial: str = 'en-nn-trial.tsv'

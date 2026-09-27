@@ -141,8 +141,10 @@ def _load_files(cfg, file_attrs: List[str]) -> List[Dict]:
 
 
 def load_labeled(cfg) -> List[Dict]:
-    """Load all configured NN and PV training datasets (+ train_aux extras)."""
+    """Load all configured NN and PV training datasets (+ optional train_aux extras)."""
     train_attrs = ['en_nn_train', 'de_nn_train', 'en_pv_train', 'de_pv_train']
+    if getattr(cfg, 'use_aux', False) or getattr(cfg, 'train_aux', None):
+        train_attrs.append('train_aux')
     return _load_files(cfg, train_attrs)
 
 
