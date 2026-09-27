@@ -69,11 +69,21 @@ class Trainer:
         )
         return train_loader, val_loader
 
-    def fit(self, train_rows: List[Dict], val_rows: List[Dict], fold: Optional[int] = None) -> FoldResult:
-        tokenizer = AutoTokenizer.from_pretrained(self.cfg.backbone)
+    def fit(
+        self,
+        train_rows: List[Dict],
+        val_rows: List[Dict],
+        tokenizer = None,
+        fold: Optional[int] = None,
+        ckpt_name: Optional[str] = None,
+        load_from: Optional[str | Path] = None,
+        **kwargs,
+    ) -> FoldResult:
+        if tokenizer is None:
+            tokenizer = AutoTokenizer.from_pretrained(self.cfg.backbone)
         train_loader, val_loader = self._build_loaders(train_rows, val_rows, tokenizer)
 
-        model = build_model(self.cfg, self.device)
+        model = build_model(self.cfg, self.device, load_from=load_from or getattr(self.cfg, 'load_from', None))
         criterion = GaussLoss(
             ccc_weight=self.cfg.ccc_weight,
             ccc_var_floor=self.cfg.ccc_var_floor,
@@ -98,7 +108,7 @@ class Trainer:
         best_rho = -1.0
         best_epoch = 0
         tag = f"_fold_{fold}" if fold is not None else ""
-        best_ckpt = self.output_dir / f'best_model{tag}.pt'
+        best_ckpt = self.output_dir / (ckpt_name if ckpt_name else f'best_model{tag}.pt')
         history: List[Dict] = []
         best_preds = None
 

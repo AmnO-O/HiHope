@@ -86,14 +86,19 @@ def train_epoch(
             if scaler is not None:
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                scale_before = scaler.get_scale()
                 scaler.step(optimizer)
                 scaler.update()
+                scale_after = scaler.get_scale()
+                # Step scheduler only if step wasn't skipped by scaler due to inf/nan gradients
+                if scheduler is not None and scale_before <= scale_after:
+                    scheduler.step()
             else:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 optimizer.step()
+                if scheduler is not None:
+                    scheduler.step()
 
-            if scheduler is not None:
-                scheduler.step()
             optimizer.zero_grad()
 
         total_loss += loss.item() * accum_steps

@@ -46,6 +46,9 @@ class Config:
     de_pv_train: str = 'de-pv-train.tsv'
     train_aux: Optional[str] = None
     use_aux: bool = False
+    test_size: float = 0.2
+    val_ratio: float = 0.2
+    load_from: Optional[str] = None
 
     # Multi-task Trial Datasets (EN / DE)
     en_nn_trial: str = 'en-nn-trial.tsv'
