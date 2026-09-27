@@ -267,3 +267,104 @@ export function generateGaussianCurveData(
 
   return data;
 }
+
+/**
+ * Simulates Target-Aware Query Cross-Attention and Component Interaction (Layers 0-3)
+ */
+export function simulateQueryAttention(
+  sentence: string,
+  modWord: string,
+  headWord: string
+): import('../types').QueryAttentionSimulation {
+  const words = sentence.split(/\s+/).filter(Boolean);
+  const modLower = modWord.toLowerCase().trim();
+  const headLower = headWord.toLowerCase().trim();
+
+  // Layer 0: Tokens and Role IDs (0: Context, 1: Mod, 2: Head, 3: Compound)
+  const tokenList = words.map((w) => {
+    const clean = w.replace(/[^\w\s-]/g, '').toLowerCase();
+    let roleId = 0;
+    let roleName = '0 (Context)';
+    if (modLower && clean.includes(modLower)) {
+      roleId = 1;
+      roleName = '1 (Mod)';
+    } else if (headLower && clean.includes(headLower)) {
+      roleId = 2;
+      roleName = '2 (Head)';
+    }
+    return {
+      token: w,
+      roleId,
+      roleName,
+    };
+  });
+
+  // Layer 1: Attention Map A in [3, S]
+  const createAttentionWeights = (slotType: 'Mod' | 'Head' | 'Compound') => {
+    let rawScores = tokenList.map((t) => {
+      let base = 0.1;
+      if (slotType === 'Mod' && t.roleId === 1) base = 2.8;
+      else if (slotType === 'Head' && t.roleId === 2) base = 2.8;
+      else if (slotType === 'Compound' && (t.roleId === 1 || t.roleId === 2)) base = 2.2;
+      else if (t.token.length > 5) base += 0.3;
+      return base + Math.sin(t.token.length * 1.7) * 0.2;
+    });
+
+    const maxScore = Math.max(...rawScores);
+    const expScores = rawScores.map((s) => Math.exp(s - maxScore));
+    const sumExp = expScores.reduce((a, b) => a + b, 0);
+    const weights = expScores.map((e) => e / sumExp);
+
+    return tokenList.map((t, idx) => ({
+      token: t.token,
+      weight: Number(weights[idx].toFixed(3)),
+      isTarget: t.roleId !== 0,
+      roleId: t.roleId,
+    }));
+  };
+
+  // Layer 2: Component Interaction Matrix [3, 3] (Mod, Head, Compound)
+  const componentMatrix = [
+    [0.55, 0.30, 0.15], // Mod attends to Mod(55%), Head(30%), Comp(15%)
+    [0.28, 0.58, 0.14], // Head attends to Mod(28%), Head(58%), Comp(14%)
+    [0.35, 0.40, 0.25], // Comp attends to Mod(35%), Head(40%), Comp(25%)
+  ];
+
+  const slots: import('../types').QuerySlot[] = [
+    {
+      name: 'Mod',
+      queryVector: [0.38, -0.45, 0.72, 0.11, -0.29, 0.65, -0.18, 0.54],
+      attentionScores: createAttentionWeights('Mod'),
+      selfAttnWeights: componentMatrix[0],
+      mu: 0.68,
+      sigma: 0.12,
+      score: 3.4,
+    },
+    {
+      name: 'Head',
+      queryVector: [-0.22, 0.61, 0.49, -0.34, 0.52, -0.15, 0.43, 0.31],
+      attentionScores: createAttentionWeights('Head'),
+      selfAttnWeights: componentMatrix[1],
+      mu: 0.84,
+      sigma: 0.08,
+      score: 4.2,
+    },
+    {
+      name: 'Compound',
+      queryVector: [0.15, 0.28, 0.62, 0.44, 0.12, 0.59, 0.37, 0.49],
+      attentionScores: createAttentionWeights('Compound'),
+      selfAttnWeights: componentMatrix[2],
+      mu: 0.76,
+      sigma: 0.10,
+      score: 3.8,
+    },
+  ];
+
+  return {
+    tokens: tokenList,
+    slots,
+    componentMatrix,
+    overallLoss: 0.042,
+  };
+}
+

@@ -2,15 +2,13 @@ import React, { useState, useMemo } from 'react';
 import { BenchmarkExample, TargetType } from './types';
 import { BENCHMARK_EXAMPLES } from './data/benchmarkDataset';
 import { alignSpansInContext, buildTokenChunks } from './engine/morphology';
-import { predictCompositionality, simulateTwoStreamVectors } from './engine/motune';
+import { predictCompositionality } from './engine/motune';
 import { Header } from './components/Header';
 import { SentenceInput } from './components/SentenceInput';
 import { SpanVisualizer } from './components/SpanVisualizer';
 import { DistributionViewer } from './components/DistributionViewer';
-import { PrototypeStreamViewer } from './components/PrototypeStreamViewer';
 import { LossInspector } from './components/LossInspector';
-import { TwoStreamVisualizer } from './components/TwoStreamVisualizer';
-import { CurrentModelFlowVisualizer } from './components/CurrentModelFlowVisualizer';
+import { QueryAttentionVisualizer } from './components/QueryAttentionVisualizer';
 import { DocsModal } from './components/DocsModal';
 
 export const App: React.FC = () => {
@@ -46,18 +44,6 @@ export const App: React.FC = () => {
   const tokens = useMemo(() => {
     return buildTokenChunks(sentence, spans);
   }, [sentence, spans]);
-
-  // Active target word for prototype stream
-  const targetWord = useMemo(() => {
-    if (activeTarget === 'mod') return modWord;
-    if (activeTarget === 'head') return headWord;
-    return `${modWord} ${headWord}`.trim();
-  }, [activeTarget, modWord, headWord]);
-
-  // Two-stream vectors & cosine metrics (src/model_two_stream.py)
-  const prototypeMetrics = useMemo(() => {
-    return simulateTwoStreamVectors(targetWord, sentence, activeTarget);
-  }, [targetWord, sentence, activeTarget]);
 
   // Gaussian predictions (mu, sigma, confidence intervals, KL divergence)
   const prediction = useMemo(() => {
@@ -107,45 +93,27 @@ export const App: React.FC = () => {
           onResetToDefault={handleResetToDefault}
         />
 
-        {/* Section 1: End-to-End Model Pipeline Flow (Two-Stream Bi-Encoder) */}
-        <CurrentModelFlowVisualizer
+        {/* Section 1: End-to-End Target-Aware Query Cross-Attention & Interaction Pipeline */}
+        <QueryAttentionVisualizer
           sentence={sentence}
-          targetWord={targetWord}
-          activeTarget={activeTarget}
-          spans={spans}
-          metrics={prototypeMetrics}
-          prediction={prediction}
+          modWord={modWord}
+          headWord={headWord}
         />
 
-        {/* Section 2: Marker-Free Span Alignment */}
+        {/* Section 2: Marker-Free Span Alignment & Token Roles */}
         <SpanVisualizer
           tokens={tokens}
           spans={spans}
           activeTarget={activeTarget}
         />
 
-        {/* Section 3: Distribution Viewer & Predictions */}
+        {/* Section 3: Gaussian Distribution & Continuous Prediction */}
         <DistributionViewer
           prediction={prediction}
           activeTarget={activeTarget}
         />
 
-        {/* Section 4: Two-Stream Prototype & Semantic Displacement */}
-        <PrototypeStreamViewer
-          metrics={prototypeMetrics}
-          targetWord={targetWord}
-          activeTarget={activeTarget}
-        />
-
-        {/* Section 5: True Two-Stream Bi-Encoder Architecture */}
-        <TwoStreamVisualizer
-          sentence={sentence}
-          targetWord={targetWord}
-          activeTarget={activeTarget}
-          metrics={prototypeMetrics}
-        />
-
-        {/* Section 6: Loss Calibration & Inverted Softplus Bias */}
+        {/* Section 4: Loss Calibration (CCC + Gaussian KL) */}
         <LossInspector />
       </main>
 

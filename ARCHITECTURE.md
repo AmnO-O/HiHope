@@ -1,10 +1,103 @@
-# Two-Stream Bi-Encoder Architecture for Compositionality Assessment
+# Compositionality Assessment Architectures
 
-## 1. Core Architecture Overview
+This codebase supports two primary paradigms for Noun Compound and Particle Verb compositionality rating ($1.0 \to 5.0$):
+1. **Target-Aware Query Cross-Attention & Component Interaction** (`src/model_query.py` - `model_backend: query_attention`)
+2. **Two-Stream Bi-Encoder Architecture** (`src/model_two_stream.py` - `model_backend: twostream`)
 
-Unlike architectures that rely solely on in-context representations or static Layer 0 lookup tables, MoTune uses a **True Two-Stream Bi-Encoder Architecture** with `jhu-clsp/mmBERT-base` (22 layers, $H=768$):
+---
 
+# 1. Target-Aware Query Cross-Attention Pipeline
+
+```text
+[INPUT SEQUENCE]
+Context: "This was soon thrown out through the back door, never to be seen again."
+Target Metadata: Mod = "back", Head = "door", Compound = "back door"
+                                   │
+                                   ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│ LAYER 0: ENCODER & EXPLICIT ROLE INJECTION                                    │
+│                                                                               │
+│  Input Token IDs  [B, S] ──────► mmBERT Encoder ────► H_mmBERT  [B, S, 768]   │
+│  Role IDs         [B, S] ──────► Role Embeddings ───► E_role    [B, S, 768]   │
+│  (0: Context, 1: Mod, 2: Head)                                │               │
+│                               H_final = H_mmBERT + E_role ───┴─► [B, S, 768]  │
+└──────────────────────────────────────┬────────────────────────────────────────┘
+                                       │
+                                       ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│ LAYER 1: TARGET-AWARE MULTI-HEAD CROSS-ATTENTION (MHCA)                       │
+│                                                                               │
+│  Learned Queries: Q_base = [q_Mod, q_Head, q_Compound] ∈ [3, 768]             │
+│  Batch Expand  ────────► Q ∈ [B, 3, 768]                                      │
+│                                                                               │
+│  Queries (Q)  = Q               ∈ [B, 3, 768]                                 │
+│  Keys (K)     = H_final · W_k   ∈ [B, S, 768]                                 │
+│  Values (V)   = H_final · W_v   ∈ [B, S, 768]                                 │
+│                                                                               │
+│  A = Softmax(Q·Kᵀ / √d_h)       ∈ [B, 3, S]  (Interpretability Attention Map) │
+│  Z_attn = MultiHeadAttention(Q, K, V)                                         │
+│  Z = LayerNorm(Q + Dropout(Z_attn))                                           │
+│  ──► Tensor Z ∈ [B, 3, 768] (Context-Conditioned Target Representations)     │
+└──────────────────────────────────────┬────────────────────────────────────────┘
+                                       │
+                                       ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│ LAYER 2: COMPONENT INTERACTION LAYER (MHSA)                                   │
+│                                                                               │
+│  Self-Attention tương tác giữa các thành tố (Mod ↔ Head ↔ Compound):           │
+│  Z_self = MultiHeadSelfAttention(Q=Z, K=Z, V=Z)                               │
+│  Z' = LayerNorm(Z + Dropout(Z_self))                                          │
+│  ──► Tensor Z' ∈ [B, 3, 768] (Boundary-Aware Compositional Representations)   │
+└──────────────────────────────────────┬────────────────────────────────────────┘
+                                       │
+                                       ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│ LAYER 3: GAUSSHEAD REGRESSION & CONTINUOUS PREDICTION                         │
+│                                                                               │
+│  z'_Mod      [B, 768] ──┐                                                     │
+│  z'_Head     [B, 768] ──┼──► Shared GaussHead ──►  Mod: (μ_mod, σ_mod)          │
+│  z'_Compound [B, 768] ──┘      (Shared MLP)        Head: (μ_head, σ_head)     │
+│                                                   Comp: (μ_comp, σ_comp)      │
+└──────────────────────────────────────┬────────────────────────────────────────┘
+                                       │
+                                       ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│ CCC LOSS & TARGET NORMALIZATION                                               │
+│                                                                               │
+│  Targets chuẩn hóa: y_norm = y_raw / 5.0 ∈ [0.2, 1.0]                          │
+│  Loss = L_CCC(μ_head, y_head_norm) + L_CCC(μ_mod, y_mod_norm)                 │
+│  Dự đoán điểm cuối cùng: Score = μ * 5.0                                      │
+└───────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Key Components
+
+1. **Layer 0: Encoder & Explicit Role Injection**
+   - Natural context tokenized without artificial delimiters.
+   - Subtoken roles tagged via `role_ids` ($0$: Context, $1$: Mod, $2$: Head, $3$: Compound/PV).
+   - $E_{\text{role}}$ adds directly onto $H_{\text{mmBERT}}$: $H_{\text{final}} = H_{\text{mmBERT}} + E_{\text{role}}$.
+
+2. **Layer 1: Target-Aware Multi-Head Cross-Attention (MHCA)**
+   - 3 learned queries $Q_{\text{base}} = [q_{\text{Mod}}, q_{\text{Head}}, q_{\text{Compound}}] \in \mathbb{R}^{3 \times 768}$.
+   - Probes $H_{\text{final}}$ to extract context-dependent semantic nuances.
+   - Attention map $A \in \mathbb{R}^{B \times 3 \times S}$ provides full token-level interpretability.
+
+3. **Layer 2: Component Interaction Layer (MHSA)**
+   - Self-Attention across $Z \in \mathbb{R}^{B \times 3 \times 768}$.
+   - Allows modifier and head representations to inform each other before final scoring.
+
+4. **Layer 3: Shared GaussHead Regression**
+   - Predicts central tendency $\mu \in [0, 1]$ and uncertainty variance $\sigma \ge 0.04$.
+   - Continuous score output: $\text{Score} = \mu \times 5.0$.
+
+5. **Optimization: Lin's CCC Loss**
+   - Directly optimizes ranking and concordance on normalized targets $y_{\text{norm}} = y / 5.0$.
+
+---
+
+# 2. Two-Stream Bi-Encoder Architecture
+
+```text
  ┌────────────────────────────────────────────────────────┐
  │ Stream 1: Isolated Target Word (Prototype)             │
  │   [CLS] target_lemma [SEP]                             │
@@ -22,46 +115,3 @@ Unlike architectures that rely solely on in-context representations or static La
  │   ──> mmBERT Encoder ──> pool_active_context           │
  └────────────────────────────────────────────────────────┘
 ```
-
----
-
-## 2. Mathematical Formalism
-
-### Stream 1: Prototype Vector $h_{\text{word}}$
-The target word or compound constituent (e.g., *"flea"* or *"flea market"*) is passed through mmBERT in isolation:
-$$h_{\text{word}} = \text{pool\_prototype}\left(\text{mmBERT}(\text{word\_tokens})\right) \in \mathbb{R}^{H}$$
-Special tokens $[CLS]$ and $[SEP]$ are excluded to isolate the pure lexical prototype representation.
-
-### Stream 2: In-Context Vector $h_{\text{context}}$
-The full sentence context is tokenized without artificial marker delimiters:
-$$H_{\text{ctx}} = \text{mmBERT}(\text{sentence\_tokens}) \in \mathbb{R}^{L \times H}$$
-Using character offset alignments, the subwords corresponding to the target constituent are extracted via masked-mean pooling:
-$$h_{\text{context}} = \frac{\sum_{i=1}^L m_i \cdot H_{\text{ctx}, i}}{\sum_{i=1}^L m_i} \in \mathbb{R}^{H}$$
-
-### Semantic Interaction & Directional Displacement
-The interaction between context and prototype captures both how context shifts the word and how much literal meaning survives:
-1. **Symmetrical Cross-Attention:**
-   - **Context-Queried Stream ($h_{\text{ctx}} \to h_{\text{proto}}$):** Measures directional displacement $\Delta h_{\text{fwd}} = h_{\text{context}} - h_{\text{word}}$ across dynamic sub-dimensions.
-   - **Prototype-Queried Stream ($h_{\text{proto}} \to h_{\text{ctx}}$):** Measures literalness preservation $\Delta h_{\text{rev}} = h_{\text{word}} - h_{\text{context}}$.
-   - **Symmetrical Combiner:** Projects concatenated directional representations back into a calibrated hidden representation with LayerNorm and residual connection to $h_{\text{context}}$.
-2. **Anisotropy-Corrected Cosine Similarity:**
-   - Mitigates raw Transformer representation anisotropy (clustering in a narrow positive cone) by mean-centering vectors prior to cosine similarity:
-     $$u_c = u - \bar{u}, \quad v_c = v - \bar{v}$$
-     $$\cos\_sim_{\text{corr}} = \frac{u_c \cdot v_c}{\|u_c\|_2 \|v_c\|_2} \in [-1, 1]$$
-   - Powers the contrastive margin ranking loss ($\mathcal{L}_{\text{rank}}$) with uncompressed margin gradients.
-
-### Fusion & Calibrated Uncertainty Prediction
-The fused representation flows into the Gaussian prediction head:
-$$(\mu, \sigma) = \text{GaussHead}(z_{\text{fused}})$$
-where:
-- $\mu \in [0.0, 5.0]$: Central degree of compositionality (literalness).
-- $\sigma \ge 0.05$: Modeled annotator disagreement variance ($\text{softplus}(\cdot) + \text{floor}$).
-
----
-
-## 3. Training Strategy (No LoRA Needed)
-With modern GPUs, mmBERT-base (~110M parameters) is fully fine-tuned or trained with top-layer unfreezing directly:
-- **Optimizer:** AdamW with linear warmup and cosine decay.
-- **Learning Rate:** $1\text{e-}5$ to $2\text{e-}5$ for the encoder, $1\text{e-}4$ for the fusion and Gaussian heads.
-- **Loss Function:**
-  $$\mathcal{L} = \mathcal{D}_{\text{KL}}\left(\mathcal{N}(\mu, \sigma^2) \parallel \mathcal{N}(y, \sigma_y^2)\right) + \lambda_{\text{ccc}} \mathcal{L}_{\text{CCC}} + \lambda_{\text{rank}} \mathcal{L}_{\text{rank}}$$

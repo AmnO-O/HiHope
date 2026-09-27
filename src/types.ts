@@ -1,6 +1,23 @@
 export type TargetType = 'mod' | 'head' | 'pv';
-export type ModelBackend = 'twostream' | 'combined' | 'exits';
+export type ModelBackend = 'twostream' | 'query_attention' | 'combined' | 'exits' | 'cloze';
 export type Language = 'en' | 'de';
+
+export interface QuerySlot {
+  name: 'Mod' | 'Head' | 'Compound';
+  queryVector: number[];
+  attentionScores: { token: string; weight: number; isTarget: boolean; roleId: number }[];
+  selfAttnWeights: number[];
+  mu: number;
+  sigma: number;
+  score: number;
+}
+
+export interface QueryAttentionSimulation {
+  tokens: { token: string; roleId: number; roleName: string }[];
+  slots: QuerySlot[];
+  componentMatrix: number[][]; // 3x3 self attention
+  overallLoss: number;
+}
 
 export interface Span {
   start: number | null;

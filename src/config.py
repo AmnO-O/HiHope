@@ -1,11 +1,4 @@
-"""Typed configuration for the gauss-only mmBERT compositionality pipeline.
-
-The `Config` dataclass is the single source of truth for every hyperparameter,
-path and mode of operation. It is built from a YAML or JSON file plus
-`--set key=value` CLI overrides, validated, and always serialized next to the
-run artifacts for reproducibility. Only the gauss head path is supported here
-(no reg/softmax heads, no MLM warmup phase).
-"""
+"""Typed configuration for Target-Aware Query Attention compositionality pipeline."""
 
 from __future__ import annotations
 
@@ -15,15 +8,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 Mode = Literal['train80']
-ModelBackend = Literal['twostream', 'combined', 'exits', 'cloze']
+ModelBackend = Literal['query_attention']
 
 _MODES = ('train80',)
-_MODEL_BACKENDS = ('twostream', 'combined', 'exits', 'cloze')
+_MODEL_BACKENDS = ('query_attention',)
 
 
 @dataclass
 class Config:
-    """All knobs used by the gauss-only training pipeline."""
+    """Configuration for Target-Aware Query Attention training pipeline."""
 
     # === run ===
     mode: Mode = 'train80'
@@ -32,31 +25,16 @@ class Config:
     # === model ===
     backbone: str = 'jhu-clsp/mmBERT-base'
     hidden_size: int = 768
-    # 'twostream' = canonical Two-Stream Bi-Encoder (src.model_two_stream);
-    # 'exits' = legacy dedicated intermediate exits (src.model).
-    model_backend: ModelBackend = 'twostream'
-    # Every output uses a dedicated intermediate exit. hidden_states[0] is the
-    # embedding output, so 19/20/21,22 select transformer blocks 18/19/20,21.
-    # The PV exit predicts one overall distribution from Base and Particle.
-    gauss_ctx_mod: Tuple[int, ...] = (19,)       # modifier exit: block 18
-    gauss_ctx_head: Tuple[int, ...] = (20,)      # head exit: block 19
-    gauss_ctx_pv: Tuple[int, ...] = (21, 22)     # PV exit: blocks 20--21
+    model_backend: ModelBackend = 'query_attention'
     head_hidden: int = 128
-    # Token-level cross-attention between the modifier and head spans is ALWAYS
-    # on (no concat-only path): each mod token attends over the head span and
-    # vice-versa, so the two constituents interact BEFORE collapsing to a single
-    # vector. A concat-only design forces all mod x head interactions into one
-    # Linear of the GaussHead, which is weaker.
-    dropout: float = 0.2
-    # literality feature (ALWAYS ON, no knob): cosine between the contextualised
-    # USE embedding of a constituent span and the static prototype (base/lemma)
-    # embedding row of its own tokens. High = word keeps its literal meaning in
-    # context (e.g. "market" in "flea market"); low = drift/lexicalised (e.g.
-    # "tower" in "ivory tower"). The cos becomes one role-tagged token of the
-    # SpanFusion attention (always on, no knob), alongside the span pair and the
-    # context mean/CLS.
+    dropout: float = 0.1
+    num_roles: int = 4            # 0: Context, 1: Mod, 2: Head, 3: Compound
+    num_cross_heads: int = 8
+    num_self_heads: int = 4
+    shared_head: bool = True
+    sigma_floor: float = 0.04
 
-    # === data / paths (filenames are resolved under data_path) ===
+    # === data / paths ===
     data_path: Optional[str] = None
     output_dir: Optional[str] = None
     max_context_length: int = 256
@@ -65,23 +43,7 @@ class Config:
     en_nn_train: str = 'en-nn-train.tsv'
     de_nn_train: str = 'de-nn-train.tsv'
     en_pv_train: str = 'en-pv-train.tsv'
-    de_pv_train: str = 'de-pv-train.tsv'          # German PV joins the mix by default
-    #                                (trennbare Verben, e.g. abhauen; mod=verb, head=particle).
-    #                                _match_german_pv locates 100% of spans; the fused one-token
-    #                                rows ("abgehauen", mod and head on the same token) pool that
-    #                                position's vector for both roles and still train via the
-    #                                prototype stream. Turn off with --set de_pv_train=.
-
-    # Extra train-only TSVs (e.g. NCTTI) loaded alongside the train files. Rows
-    # get is_aux=True so the compound-level 80/20 split never selects them for
-    # the holdout. Must satisfy _is_nn (Compound/Mod/Head) or _is_pv
-    # (ParticleVerb/Base/Particle) schema; label columns optional.
-    train_aux: List[str] = field(default_factory=list)
-    # Scale factor on the supervised loss of aux rows (is_aux=True). Values in
-    # (0, 1) treat external resources (NCTTI / Cordeiro / litnlit) as weak
-    # regularization instead of letting them dictate the primary distribution;
-    # 1.0 = no down-weighting. Applied per-row inside GaussLoss.
-    aux_loss_weight: float = 1.0
+    de_pv_train: str = 'de-pv-train.tsv'
 
     # Multi-task Trial Datasets (EN / DE)
     en_nn_trial: str = 'en-nn-trial.tsv'
@@ -89,277 +51,46 @@ class Config:
     en_pv_trial: str = 'en-pv-trial.tsv'
     de_pv_trial: str = 'de-pv-trial.tsv'
 
-    # === scoring phases (encoder frozen, then LoRA) ===
+    # === training phases ===
     freeze_epochs: int = 3
-    lora_epochs: int = 9
-    # Per-sample active target (single-target prompt mode). Empty = joint
-    # training (mod + head + pv supervised as today). Non-empty expands the
-    # dataset to one row per listed target, each supervised on its own label:
-    #   ['mod'] -> ModAvg, ['head'] -> HeadAvg, ['pv'] -> Avg (PV rows only).
-    # List e.g. ['mod', 'head', 'pv'] for the 3N design.
+    unfreeze_epochs: int = 9
     targets: List[str] = field(default_factory=lambda: ['mod', 'head', 'pv'])
-    # A/B escape hatch: also fully unfreeze top layers from this index (0 = off)
-    unfreeze_from_layer: int = 0
-    # LoRA adapter used during scoring (fresh rank, trained on the spot)
-    lora_rank: int = 8
-    lora_alpha: int = 16
-    lora_dropout: float = 0.1
-    lora_targets: List[str] = field(default_factory=lambda: ['Wqkv', 'Wo', 'q_proj', 'k_proj', 'v_proj', 'o_proj'])
-    # Apply LoRA only to layer index >= this (0 = all 22 layers of mmBERT);
-    # top layers carry the compositional semantics.
-    lora_from_layer: int = 18
 
-    # === two-stream prototype representation (lexical vs contextual) ===
-    proto_stream: bool = False
-    proto_mode: str = 'template'
-    max_proto_length: int = 32
-    proto_rank_loss: float = 0.0
-    proto_margin: float = 0.2
-    fusion_type: str = 'cross_attention'
-    fusion_layers: int = 2
-    fusion_heads: int = 4
-    target_mask_prob: float = 0.0
-    extract_layers: Optional[Tuple[int, ...]] = (14, 15, 16, 17, 18)
-    extract_mode: str = 'mean'
-    use_adaptive_gate: bool = False
-    gate_hidden: int = 128
-    # True = route every exit (mod/head/pv) through ONE shared GaussHead;
-    # False = dedicated per-task GaussHeads. A/B knob for the overfitting study.
-    shared_head: bool = False
+    # Optimization
+    batch_size: int = 16
+    eval_batch_size: int = 32
+    gradient_accumulation_steps: int = 1
+    lr_heads: float = 3e-4
+    lr_backbone: float = 2e-5
+    weight_decay: float = 0.01
+    max_grad_norm: float = 1.0
+    warmup_ratio: float = 0.1
+    fp16: bool = True
 
-    # === Within-Exit Partitioned InfoNCE (WEP-InfoNCE) ===
-    use_wep_infonce: bool = False
-    wep_tau: float = 0.10
-    wep_weight: float = 0.08
-    wep_use_std_attenuation: bool = False
-    phase0_only: bool = False             # True: train ONLY contrastive WEP-InfoNCE representation alignment
-    supervised_loss_weight: float = 1.0   # Scale factor on Gauss regression heads (0.0 during Phase 0)
-    load_from: Optional[str] = None       # Path to pre-trained checkpoint to initialize weights from
-
-    # === Cloze-Prompt Masked Probing knobs ===
-    prompt_style: str = 'score'           # 'score' (ultra-compact) or 'verbalizer'
-    use_verbalizer_prior: bool = True
-    sigma_floor: float = 0.04
-    max_length: int = 160
-
-    # === optimization ===
-    batch_size: int = 32
-    accum_steps: int = 1
-    head_lr: float = 1e-4
-    head_lr_schedule: str = 'constant'  # 'constant', 'cosine', 'linear'
-    head_lr_min_ratio: float = 0.1      # min_lr = head_lr * head_lr_min_ratio
-    warmup_ratio: float = 0.0           # linear warmup fraction of total steps
-    encoder_lr: float = 8e-6
-    embedding_lr: float = 0.0      # 0 = frozen (mmBERT embedding table is ~197M)
-    weight_decay: float = 0.05
-    grad_clip: float = 1.0
-    amp_init_scale: float = 1024.0
-    amp_growth_interval: int = 256
-    patience: int = 4
-    num_workers: int = 2
-
-    # === ema ===
-    # Exponential moving average of trainable weights, swapped in for
-    # validation / checkpointing. 0 = disabled.
-    ema_decay: float = 0.0
-
-    # === losses ===
-    kl_weight: float = 1.0
+    # Loss terms
     ccc_weight: float = 0.7
     ccc_var_floor: float = 0.05
     bin_sigma: float = 0.5
     use_label_std: bool = True
-
-    # === split ===
-    test_size: float = 0.2
-
-    # ------------------------------------------------------------------ #
-    # derived
-    # ------------------------------------------------------------------ #
-    @property
-    def total_epochs(self) -> int:
-        return self.freeze_epochs + self.lora_epochs
-
-    # ------------------------------------------------------------------ #
-    # construction helpers
-    # ------------------------------------------------------------------ #
-    @classmethod
-    def defaults(cls) -> 'Config':
-        return cls()
-
-    @classmethod
-    def from_dict(cls, values: Dict[str, Any], strict: bool = False) -> 'Config':
-        known = {f.name for f in fields(cls)}
-        extra = {k for k in values if not k.startswith('_')} - known
-        if extra and strict:
-            raise ValueError(f'Unknown config keys: {sorted(extra)}')
-        safe = {k: v for k, v in values.items() if k in known and v is not None}
-        tuple_fields = {f.name for f in fields(cls) if 'Tuple' in str(f.type)}
-        for name in tuple_fields:
-            if isinstance(safe.get(name), list):
-                safe[name] = tuple(safe[name])
-        return replace(cls.defaults(), **safe)
-
-    @classmethod
-    def load(cls, path: str | Path) -> 'Config':
-        path = Path(path)
-        if path.suffix.lower() in ('.yml', '.yaml'):
-            try:
-                import yaml  # lazy: optional dependency
-            except ImportError as exc:
-                raise ValueError(
-                    'PyYAML is required to load a .yaml config file '
-                    '(pip install PyYAML, or use a .json config)'
-                ) from exc
-            raw = yaml.safe_load(path.read_text(encoding='utf-8'))
-            if not isinstance(raw, dict):
-                raise ValueError(f'YAML config must be a mapping, got {type(raw).__name__}')
-            return cls.from_dict(raw)
-        return cls.from_dict(json.loads(path.read_text(encoding='utf-8')))
-
-    def update(self, **values: Any) -> 'Config':
-        return self.from_dict(values, strict=True).__class__(
-            **{**asdict(self), **values}
-        )
-
-    # ------------------------------------------------------------------ #
-    # serialization / validation
-    # ------------------------------------------------------------------ #
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-    def pretty(self) -> str:
-        return json.dumps(asdict(self), indent=2, ensure_ascii=False)
-
-    def save(self, path: str | Path) -> None:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_text(self.pretty() + '\n', encoding='utf-8')
-
-    def build_tokenizer(self):
-        from transformers import AutoTokenizer
-        return AutoTokenizer.from_pretrained(self.backbone)
-
-    def validate(self) -> None:
-        errors: List[str] = []
-
-        if self.model_backend == 'combined':
-            self.model_backend = 'twostream'
-
-        if self.mode not in _MODES:
-            errors.append(f'mode must be one of {_MODES}, got {self.mode!r}')
-        if self.model_backend not in _MODEL_BACKENDS:
-            errors.append(
-                f'model_backend must be one of {_MODEL_BACKENDS}, got {self.model_backend!r}'
-            )
-        if not set(self.targets) <= {'mod', 'head', 'pv'}:
-            errors.append(
-                f'targets must be a subset of {{mod, head, pv}}, got {self.targets}'
-            )
-
-        if self.batch_size < 1:
-            errors.append(f'batch_size must be >= 1, got {self.batch_size}')
-        if self.accum_steps < 1:
-            errors.append(f'accum_steps must be >= 1, got {self.accum_steps}')
-        if self.num_workers < 0:
-            errors.append(f'num_workers must be >= 0, got {self.num_workers}')
-        if not 0 <= self.freeze_epochs:
-            errors.append(f'freeze_epochs must be >= 0, got {self.freeze_epochs}')
-        if self.lora_epochs < 0:
-            errors.append(f'lora_epochs must be >= 0, got {self.lora_epochs}')
-        if self.lora_targets and self.lora_epochs < 1:
-            errors.append(f'lora_epochs must be >= 1 when lora_targets is set, got {self.lora_epochs}')
-        if self.total_epochs < 1:
-            errors.append('total_epochs must be >= 1')
-
-        if self.lora_targets and self.lora_epochs > 0:
-            if self.lora_rank < 1:
-                errors.append('lora_rank must be >= 1')
-            if self.lora_alpha < 1:
-                errors.append('lora_alpha must be >= 1')
-        else:
-            if self.lora_rank < 0:
-                errors.append('lora_rank must be >= 0')
-            if self.lora_alpha < 0:
-                errors.append('lora_alpha must be >= 0')
-        if self.unfreeze_from_layer < 0:
-            errors.append(f'unfreeze_from_layer must be >= 0, got {self.unfreeze_from_layer}')
-
-        if self.patience < 1:
-            errors.append(f'patience must be >= 1, got {self.patience}')
-        if not 0 <= self.ema_decay < 1:
-            errors.append(f'ema_decay must be in [0, 1), got {self.ema_decay}')
-        if self.head_lr <= 0:
-            errors.append(f'head_lr must be positive, got {self.head_lr}')
-        if self.head_lr_schedule not in ('constant', 'cosine', 'linear'):
-            errors.append(
-                f'head_lr_schedule must be one of {{"constant", "cosine", "linear"}}, got {self.head_lr_schedule!r}'
-            )
-        if not 0.0 <= self.head_lr_min_ratio <= 1.0:
-            errors.append(f'head_lr_min_ratio must be in [0, 1], got {self.head_lr_min_ratio}')
-        if not 0.0 <= self.warmup_ratio <= 1.0:
-            errors.append(f'warmup_ratio must be in [0, 1], got {self.warmup_ratio}')
-
-        if self.lora_targets and self.lora_epochs > 0 and self.encoder_lr <= 0:
-            errors.append(f'encoder_lr must be positive when training LoRA, got {self.encoder_lr}')
-        elif self.encoder_lr < 0:
-            errors.append(f'encoder_lr must be >= 0, got {self.encoder_lr}')
-        if self.embedding_lr < 0:
-            errors.append(f'embedding_lr must be >= 0, got {self.embedding_lr}')
-        if not 0 <= self.grad_clip:
-            errors.append(f'grad_clip must be >= 0, got {self.grad_clip}')
-
-        if self.ccc_var_floor < 0:
-            errors.append(f'ccc_var_floor must be >= 0, got {self.ccc_var_floor}')
-        if self.bin_sigma <= 0:
-            errors.append(f'bin_sigma must be > 0, got {self.bin_sigma}')
-        if self.amp_init_scale <= 0:
-            errors.append(f'amp_init_scale must be > 0, got {self.amp_init_scale}')
-        if self.amp_growth_interval < 1:
-            errors.append(f'amp_growth_interval must be >= 1, got {self.amp_growth_interval}')
-        if not 0 < self.test_size < 1:
-            errors.append(f'test_size must be in (0, 1), got {self.test_size}')
-
-        if self.proto_rank_loss < 0:
-            errors.append(f'proto_rank_loss must be >= 0, got {self.proto_rank_loss}')
-        if self.proto_margin < 0:
-            errors.append(f'proto_margin must be >= 0, got {self.proto_margin}')
-        if not 0.0 <= self.target_mask_prob <= 1.0:
-            errors.append(f'target_mask_prob must be in [0, 1], got {self.target_mask_prob}')
-        if self.fusion_type not in ('cross_attention', 'linear'):
-            errors.append(f'fusion_type must be "cross_attention" or "linear", got {self.fusion_type!r}')
-        if self.fusion_layers < 1:
-            errors.append(f'fusion_layers must be >= 1, got {self.fusion_layers}')
-        if self.fusion_heads < 1:
-            errors.append(f'fusion_heads must be >= 1, got {self.fusion_heads}')
-        if self.proto_stream and self.model_backend not in ('twostream', 'combined'):
-            errors.append(f'proto_stream requires model_backend="twostream", got "{self.model_backend}"')
-
-        if errors:
-            raise ValueError('Invalid configuration:\n  ' + '\n  '.join(errors))
+    kl_weight: float = 1.0
 
 
-def coerce_value(name: str, raw: Any, cfg: type = Config) -> Any:
-    """Coerce a raw CLI `--set` value to the Config field type.
+def config_from_dict(d: Dict[str, Any]) -> Config:
+    """Construct a Config dataclass from a raw dictionary."""
+    valid_keys = {f.name for f in fields(Config)}
+    filtered = {k: v for k, v in d.items() if k in valid_keys}
+    return Config(**filtered)
 
-    Strings are coerced to int/float/bool/List[str] when the field expects
-    them; everything else passes through and is validated later by
-    ``Config.validate``.
-    """
-    f = next((f for f in fields(cfg) if f.name == name), None)
-    if f is None:
-        return raw
-    if not isinstance(raw, str):
-        return raw
-    type_ = f.type
-    if 'List' in type_ or 'list' in type_ or 'Tuple' in type_ or 'tuple' in type_:
-        raw = raw.strip()
-        if len(raw) >= 2 and raw[0] in ('[', '(') and raw[-1] in (']', ')'):
-            raw = raw[1:-1]
-        return [x.strip().strip('\'"') for x in raw.split(',') if x.strip()]
-    if type_ == 'int':
-        return int(raw)
-    if type_ == 'float':
-        return float(raw)
-    if type_ == 'bool':
-        return raw.strip().lower() in ('1', 'true', 'yes', 'on')
-    return raw
+
+def config_from_json(path: str | Path) -> Config:
+    """Load Config from a JSON file."""
+    with open(path, 'r', encoding='utf-8') as f:
+        return config_from_dict(json.load(f))
+
+
+def save_config(cfg: Config, path: str | Path) -> None:
+    """Save Config to a JSON file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(asdict(cfg), f, indent=2)
