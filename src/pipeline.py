@@ -34,7 +34,7 @@ def _load_all(cfg: Config, logger: logging.Logger) -> List[Dict]:
 
 def _tokenizer(cfg: Config, logger: logging.Logger):
     from transformers import AutoTokenizer
-    return AutoTokenizer.from_pretrained(cfg.backbone)
+    return AutoTokenizer.from_pretrained(cfg.backbone, trust_remote_code=True)
 
 
 # --------------------------------------------------------------------------- #

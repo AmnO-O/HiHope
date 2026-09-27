@@ -273,9 +273,15 @@ class TargetAwareQueryAttentionModel(nn.Module):
         self.use_rms_norm = use_rms_norm
 
         # Layer 0: Encoder & Role Embeddings
-        self.lm = AutoModel.from_pretrained(backbone)
+        self.lm = AutoModel.from_pretrained(backbone, trust_remote_code=True)
+        # Auto-detect hidden size from backbone config
+        detected_dim = getattr(self.lm.config, 'hidden_size', None) or getattr(self.lm.config, 'd_model', None)
+        if detected_dim is not None:
+            hidden_size = detected_dim
+        self.hidden_size = hidden_size
+
         self.role_embeddings = nn.Embedding(num_roles, hidden_size)
-        # Small initialization for role embeddings so they blend smoothly with mmBERT
+        # Small initialization for role embeddings so they blend smoothly with backbone
         nn.init.normal_(self.role_embeddings.weight, mean=0.0, std=0.02)
 
         # Layer 1: Target-Aware Multi-Head Cross-Attention

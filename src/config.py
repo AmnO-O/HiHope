@@ -103,7 +103,7 @@ class Config:
     def build_tokenizer(self):
         """Construct HuggingFace AutoTokenizer for configured backbone."""
         from transformers import AutoTokenizer
-        return AutoTokenizer.from_pretrained(self.backbone)
+        return AutoTokenizer.from_pretrained(self.backbone, trust_remote_code=True)
 
 
 def coerce_value(key: str, val: str | Any) -> Any:

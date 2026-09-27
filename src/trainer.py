@@ -80,7 +80,7 @@ class Trainer:
         **kwargs,
     ) -> FoldResult:
         if tokenizer is None:
-            tokenizer = AutoTokenizer.from_pretrained(self.cfg.backbone)
+            tokenizer = AutoTokenizer.from_pretrained(self.cfg.backbone, trust_remote_code=True)
         train_loader, val_loader = self._build_loaders(train_rows, val_rows, tokenizer)
 
         model = build_model(self.cfg, self.device, load_from=load_from or getattr(self.cfg, 'load_from', None))
