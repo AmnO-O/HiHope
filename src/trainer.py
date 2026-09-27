@@ -157,6 +157,26 @@ class Trainer:
         if best_preds is None:
             best_preds = (0.0, 0.0, 0.0, np.array([]), np.array([]), np.array([]), np.array([]))
 
+        # Save final epoch checkpoint
+        final_ckpt = self.output_dir / f'final_model_fold_{fold or 0}.pt'
+        torch.save(model.state_dict(), final_ckpt)
+        self.logger.info("Saved final epoch checkpoint to %s", final_ckpt)
+
+        # Save training history and summary
+        summary_path = self.output_dir / f'training_summary_fold_{fold or 0}.json'
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump({
+                'fold': fold,
+                'best_epoch': best_epoch,
+                'best_rho_mean': float(best_rho),
+                'best_rho_mod': float(best_preds[0]),
+                'best_rho_head': float(best_preds[1]),
+                'best_rho_pv': float(best_preds[2]),
+                'best_ckpt': str(best_ckpt),
+                'final_ckpt': str(final_ckpt),
+                'history': history,
+            }, f, indent=2)
+
         return FoldResult(
             fold=fold,
             rho_mod=best_preds[0],

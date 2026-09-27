@@ -290,6 +290,7 @@ class TargetAwareQueryAttentionModel(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
+        role_ids: Optional[torch.Tensor] = None,
         mod_span_mask: Optional[torch.Tensor] = None,
         head_span_mask: Optional[torch.Tensor] = None,
         compound_span_mask: Optional[torch.Tensor] = None,
@@ -309,12 +310,13 @@ class TargetAwareQueryAttentionModel(nn.Module):
         )
         h_mmbert = encoder_out.last_hidden_state  # [B, S, 768]
 
-        role_ids = self._build_role_ids(
-            input_ids=input_ids,
-            mod_span_mask=mod_span_mask,
-            head_span_mask=head_span_mask,
-            compound_span_mask=compound_span_mask,
-        )
+        if role_ids is None:
+            role_ids = self._build_role_ids(
+                input_ids=input_ids,
+                mod_span_mask=mod_span_mask,
+                head_span_mask=head_span_mask,
+                compound_span_mask=compound_span_mask,
+            )
         e_role = self.role_embeddings(role_ids)    # [B, S, 768]
         h_final = h_mmbert + e_role                # [B, S, 768]
 
@@ -333,22 +335,43 @@ class TargetAwareQueryAttentionModel(nn.Module):
 
     def forward(
         self,
-        batch: Dict[str, torch.Tensor],
+        batch: Optional[Union[Dict[str, torch.Tensor], torch.Tensor]] = None,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        role_ids: Optional[torch.Tensor] = None,
+        mod_span_mask: Optional[torch.Tensor] = None,
+        head_span_mask: Optional[torch.Tensor] = None,
+        compound_span_mask: Optional[torch.Tensor] = None,
         with_logits: bool = False,
         with_pv: bool = False,
+        **kwargs,
     ):
         """
         Forward pass predicting continuous Gaussian distributions for Mod, Head, and Compound.
+        Supports both batch dictionary input and explicit tensor kwargs.
         """
-        input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask']
-        mod_span_mask = batch.get('mod_span_mask')
-        head_span_mask = batch.get('head_span_mask')
-        compound_span_mask = batch.get('compound_span_mask')
+        is_dict_batch = False
+        if isinstance(batch, dict):
+            is_dict_batch = True
+            input_ids = batch.get('input_ids', input_ids)
+            attention_mask = batch.get('attention_mask', attention_mask)
+            role_ids = batch.get('role_ids', role_ids)
+            mod_span_mask = batch.get('mod_span_mask', mod_span_mask)
+            head_span_mask = batch.get('head_span_mask', head_span_mask)
+            compound_span_mask = batch.get('compound_span_mask', compound_span_mask)
+        elif isinstance(batch, torch.Tensor) and input_ids is None:
+            input_ids = batch
 
-        z_prime, _, _ = self.forward_features(
+        if input_ids is None:
+            raise ValueError("forward() requires input_ids tensor or a batch dictionary containing 'input_ids'")
+
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids)
+
+        z_prime, cross_attn_map, comp_attn_map = self.forward_features(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            role_ids=role_ids,
             mod_span_mask=mod_span_mask,
             head_span_mask=head_span_mask,
             compound_span_mask=compound_span_mask,
@@ -381,4 +404,22 @@ class TargetAwareQueryAttentionModel(nn.Module):
 
         if with_pv:
             return mod_pred, head_pred, comp_pred
+
+        if not is_dict_batch:
+            mu_all = torch.stack([mod_pred, head_pred, comp_pred], dim=-1)
+            sigma_all = torch.stack([mod_sigma, head_sigma, comp_sigma], dim=-1)
+            return {
+                'mu_all': mu_all,
+                'sigma_all': sigma_all,
+                'mu_0': mod_pred,
+                'mu_1': head_pred,
+                'mu_2': comp_pred,
+                'sigma_0': mod_sigma,
+                'sigma_1': head_sigma,
+                'sigma_2': comp_sigma,
+                'cross_attn_map': cross_attn_map,
+                'comp_matrix': comp_attn_map,
+                'z_prime': z_prime,
+            }
+
         return mod_pred, head_pred
