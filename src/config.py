@@ -28,6 +28,7 @@ class Config:
     model_backend: ModelBackend = 'query_attention'
     head_hidden: int = 128
     dropout: float = 0.1
+    num_queries: int = 3          # Number of learned probing queries (3 for standard target slots, or 16/64/128 for latent memory)
     num_roles: int = 4            # 0: Context, 1: Mod, 2: Head, 3: Compound
     num_cross_heads: int = 8
     num_self_heads: int = 4

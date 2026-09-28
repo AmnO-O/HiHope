@@ -106,13 +106,14 @@ def create_norm(hidden_size: int, use_rms_norm: bool = True, eps: float = 1e-6) 
 class TargetAwareCrossAttention(nn.Module):
     """Layer 1: Target-Aware Multi-Head Cross-Attention (MHCA).
     
-    Probes in-context representation H_final using 3 learned query vectors
-    [q_Mod, q_Head, q_Compound]. Supports Pre-LN and RMSNorm.
+    Probes in-context representation H_final using learned query vectors
+    [q_Mod, q_Head, q_Compound, ... q_{K-1}]. Supports Pre-LN and RMSNorm.
     """
 
     def __init__(
         self,
         hidden_size: int = 768,
+        num_queries: int = 3,
         num_heads: int = 8,
         dropout: float = 0.1,
         use_pre_ln: bool = True,
@@ -120,12 +121,13 @@ class TargetAwareCrossAttention(nn.Module):
     ):
         super().__init__()
         self.hidden_size = hidden_size
+        self.num_queries = max(3, num_queries)
         self.num_heads = num_heads
         self.use_pre_ln = use_pre_ln
         self.use_rms_norm = use_rms_norm
         
-        # 3 Learned Probing Queries: [q_Mod, q_Head, q_Compound]
-        self.q_base = nn.Parameter(torch.empty(3, hidden_size))
+        # Learned Probing Queries: [q_0, q_1, q_2, ... q_{K-1}]
+        self.q_base = nn.Parameter(torch.empty(self.num_queries, hidden_size))
         nn.init.normal_(self.q_base, std=0.02)
         
         self.mha = nn.MultiheadAttention(
@@ -149,11 +151,11 @@ class TargetAwareCrossAttention(nn.Module):
             h_final: [B, S, H] encoder output with role injection
             attention_mask: [B, S] boolean or 0/1 mask (1 for valid token, 0 for pad)
         Returns:
-            Z: [B, 3, H] context-conditioned target representations
-            attn_weights: [B, 3, S] attention map over sequence tokens
+            Z: [B, K, H] context-conditioned target representations
+            attn_weights: [B, K, S] attention map over sequence tokens
         """
         b_size = h_final.size(0)
-        # Expand learned queries for the batch: [B, 3, H]
+        # Expand learned queries for the batch: [B, K, H]
         q = self.q_base.unsqueeze(0).expand(b_size, -1, -1)
 
         # MultiheadAttention expects key_padding_mask as True for padded positions
@@ -252,6 +254,7 @@ class TargetAwareQueryAttentionModel(nn.Module):
         self,
         backbone: str = "jhu-clsp/mmBERT-base",
         hidden_size: int = 768,
+        num_queries: int = 3,
         head_hidden: int = 128,
         dropout: float = 0.1,
         num_roles: int = 4,  # 0: Context, 1: Mod, 2: Head, 3: Compound/PV
@@ -266,6 +269,7 @@ class TargetAwareQueryAttentionModel(nn.Module):
         super().__init__()
         self.backbone_name = backbone
         self.hidden_size = hidden_size
+        self.num_queries = max(3, num_queries)
         self.scale_target_5x = scale_target_5x
         self.sigma_floor = sigma_floor
         self.shared_head = shared_head
@@ -290,6 +294,7 @@ class TargetAwareQueryAttentionModel(nn.Module):
         # Layer 1: Target-Aware Multi-Head Cross-Attention
         self.cross_attn = TargetAwareCrossAttention(
             hidden_size=hidden_size,
+            num_queries=self.num_queries,
             num_heads=num_cross_heads,
             dropout=dropout,
             use_pre_ln=use_pre_ln,

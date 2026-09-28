@@ -38,6 +38,7 @@ def build_model(cfg, device, load_from: Optional[str | Path] = None) -> nn.Modul
     model = TargetAwareQueryAttentionModel(
         backbone=cfg.backbone,
         hidden_size=cfg.hidden_size,
+        num_queries=int(getattr(cfg, 'num_queries', 3)),
         head_hidden=cfg.head_hidden,
         dropout=cfg.dropout,
         shared_head=bool(getattr(cfg, 'shared_head', True)),

@@ -6,6 +6,7 @@
   "model_backend": "query_attention",
   "head_hidden": 128,
   "dropout": 0.1,
+  "num_queries": 3,
   "num_roles": 4,
   "num_cross_heads": 8,
   "num_self_heads": 4,
