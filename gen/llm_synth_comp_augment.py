@@ -226,8 +226,8 @@ def parse_args():
                         help='Output JSON metadata path')
     parser.add_argument('--tsv-dir', default='gen/synth',
                         help='Output directory for SynthNN_*/SynthPV_* TSV files')
-    parser.add_argument('--resume', action='store_true',
-                        help='Skip rows already present in output JSON')
+    parser.add_argument('--fresh', action='store_true',
+                        help='Ignore existing checkpoints and restart generation from scratch (default: auto-resumes)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Only inspect and print source statistics without making API calls')
     return parser.parse_args()
@@ -244,22 +244,66 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
+def get_checkpoint_jsonl_path(out_path: str) -> str:
+    base, _ = os.path.splitext(out_path)
+    return f"{base}.checkpoint.jsonl"
+
+
+def append_checkpoint_jsonl(out_path: str, record: Dict[str, Any]):
+    jsonl_path = get_checkpoint_jsonl_path(out_path)
+    os.makedirs(os.path.dirname(os.path.abspath(jsonl_path)) or '.', exist_ok=True)
+    with open(jsonl_path, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(record, ensure_ascii=False) + '\n')
+
+
 def load_existing(out_path: str) -> Dict[str, Dict[str, Any]]:
-    if not ARGS.resume or not os.path.exists(out_path):
+    if ARGS.fresh:
+        # User explicitly requested fresh run
+        jsonl_path = get_checkpoint_jsonl_path(out_path)
+        if os.path.exists(jsonl_path):
+            try:
+                os.remove(jsonl_path)
+            except Exception:
+                pass
         return {}
-    try:
-        with open(out_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        items = data.get('items', [])
-        loaded: Dict[str, Dict[str, Any]] = {}
-        for it in items:
-            key = it.get('source_id') or it.get('id')
-            if key and (it.get('variants') or it.get('rewritten')):
-                loaded[key] = it
-        return loaded
-    except Exception as e:
-        print(f"  [Warning] Could not load resume cache from {out_path}: {e}")
-        return {}
+
+    loaded: Dict[str, Dict[str, Any]] = {}
+
+    # 1. Load from main JSON if exists
+    if os.path.exists(out_path):
+        try:
+            with open(out_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            items = data.get('items', [])
+            for it in items:
+                key = it.get('source_id') or it.get('id')
+                if key and (it.get('variants') or it.get('rewritten')):
+                    loaded[key] = it
+        except Exception as e:
+            print(f"  [Warning] Could not load cache from {out_path}: {e}")
+
+    # 2. Also load/overlay any real-time JSONL checkpoint records
+    jsonl_path = get_checkpoint_jsonl_path(out_path)
+    if os.path.exists(jsonl_path):
+        try:
+            with open(jsonl_path, 'r', encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        key = rec.get('source_id') or rec.get('id')
+                        if key and (rec.get('variants') or rec.get('rewritten')):
+                            loaded[key] = rec
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"  [Warning] Could not read JSONL checkpoint {jsonl_path}: {e}")
+
+    if loaded:
+        print(f"  [Checkpoint Loaded] Found {len(loaded)} previously completed source items.")
+    return loaded
 
 
 def find_input_paths() -> List[str]:
@@ -811,7 +855,7 @@ def main():
               f"(after alignment validation)")
         return
 
-    existing_items = load_existing(ARGS.out) if ARGS.resume else {}
+    existing_items = load_existing(ARGS.out)
     done_ids: Set[str] = set(existing_items.keys())
     todo_rows = [r for r in rows if r['id'] not in done_ids]
     # Keep batches homogeneous per (lang, kind).
@@ -889,7 +933,7 @@ def main():
                         stats[status] = stats.get(status, 0) + 1
                         if status == 'ok' and variants_list:
                             src = row_lookup[r_id]
-                            results[r_id] = {
+                            rec = {
                                 'source_id': r_id,
                                 'lang': src['lang'],
                                 'kind': src['kind'],
@@ -904,15 +948,17 @@ def main():
                                 'variants_count': len(variants_list),
                                 'generated_at': now_iso(),
                             }
+                            results[r_id] = rec
+                            append_checkpoint_jsonl(ARGS.out, rec)
 
-                    if processed % 10 == 0 or processed == len(prompt_batches):
-                        total_saved = persist_snapshot()
-                        elapsed = time.time() - t0
-                        speed = (processed * ARGS.batch_size) / max(elapsed, 0.001)
-                        print(f"  Progress: {processed}/{len(prompt_batches)} requests "
-                              f"({speed:.1f} rows/s) | Synthetic Rows: {total_saved} | "
-                              f"Ok: {stats['ok']} | Errors: {stats['empty_or_invalid'] + stats['gave_up']}",
-                              flush=True)
+                # Persist snapshot after every chunk of parallel requests
+                total_saved = persist_snapshot()
+                elapsed = time.time() - t0
+                speed = (processed * ARGS.batch_size) / max(elapsed, 0.001)
+                print(f"  Progress: {processed}/{len(prompt_batches)} requests "
+                      f"({speed:.1f} rows/s) | Synthetic Rows: {total_saved} | "
+                      f"Ok: {stats['ok']} | Errors: {stats['empty_or_invalid'] + stats['gave_up']}",
+                      flush=True)
 
                 if effective_delay > 0 and (i + concurrency) < len(prompt_batches):
                     time.sleep(effective_delay * len(chunk))
