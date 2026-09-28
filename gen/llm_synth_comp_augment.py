@@ -117,10 +117,12 @@ REFUSAL_PATTERNS = [
 LANGUAGE_INSTRUCTIONS = {
     'EN': ("English. Natural, neutral written English — formal or encyclopedic prose "
            "typical of dictionary example sentences. Keep roughly the same length, "
-           "tone and register as the source sentence. Do NOT translate into another language."),
+           "tone and register as the source sentence. For phrasal verbs, natural tense inflections "
+           "(e.g. 'gave up', 'gives up', 'giving up') are encouraged where grammatically fitting."),
     'DE': ("German. Natural, neutral written German — formal or encyclopedic prose "
-           "typical of dictionary example sentences. Keep roughly the same length, "
-           "tone and register as the source sentence. Do NOT translate into English."),
+           "typical of dictionary example sentences. For German separable particle verbs (trennbare Verben, "
+           "e.g. 'abhauen', 'aufgeben'), you are fully permitted and encouraged to conjugate and separate "
+           "the verb in main clauses (e.g. 'haute ... ab', 'gibt ... auf') or use natural participial forms."),
 }
 
 SINGLE_SYSTEM_PROMPT = """You are an expert computational linguist assisting in corpus annotation for a compositionality research dataset.
@@ -129,11 +131,10 @@ Your task is to paraphrase a source sentence that contains a TARGET CONSTRUCTION
 The dataset scores how compositional each construction is on a 0-5 scale. The source sentence has a LOW score: the construction is non-compositional (its meaning is not the sum of its parts). Each paraphrase must therefore keep the construction in the SAME idiomatic sense, so the low score stays valid.
 
 STRICT REQUIREMENTS:
-1. CONSTRUCTION PRESERVATION: Include the target construction VERBATIM and unchanged:
+1. CONSTRUCTION PRESERVATION: Include the target construction VERBATIM (or naturally inflected/separated for verbs):
    {construction_desc}
-   The construction must appear literally in every paraphrase.
 2. SENSE PRESERVATION: Keep the EXACT same reading / meaning as the source sentence — nothing is re-scored, nothing becomes more literal or more idiomatic.
-3. LINGUISTIC DIVERSITY ACROSS VARIANTS: Vary word order, clause structure, synonymy of NON-construction words, and phrasing so each variant is genuinely different.
+3. LINGUISTIC DIVERSITY ACROSS VARIANTS: Vary word order, clause structure, synonymy of NON-construction words, and phrasing so each variant is genuinely distinct.
 4. REGISTER: Match the source sentence's length and prose style ({lang_instruction}).
 5. Do NOT explain, define, gloss, or comment on the construction.
 
@@ -152,9 +153,9 @@ Your task is to paraphrase a BATCH of {batch_size} source sentences, each contai
 The dataset scores how compositional each construction is on a 0-5 scale. Each source sentence has a LOW score: the construction is non-compositional. Each paraphrase must keep the construction in the SAME idiomatic sense.
 
 STRICT REQUIREMENTS PER ITEM:
-1. CONSTRUCTION PRESERVATION: Include every item's "construction" field VERBATIM and unchanged in ALL of its paraphrases.
+1. CONSTRUCTION PRESERVATION: Include every item's "construction" verbatim (or naturally inflected/separated for verbs) in ALL of its paraphrases.
 2. SENSE PRESERVATION: Keep the exact same reading / meaning as the source sentence.
-3. LINGUISTIC DIVERSITY: Vary word order, clause structure and phrasing across the variants.
+3. LINGUISTIC DIVERSITY: Vary word order, clause structure, subject/topics, and phrasing across the variants.
 4. REGISTER: Match the source sentence's length and prose style ({lang_instruction}).
 5. Do NOT explain, define, gloss, or comment on any construction.
 
@@ -197,8 +198,12 @@ def parse_args():
                         help='File or glob pattern of gold dataset files (e.g. dataset/en-nn-train.tsv)')
     parser.add_argument('--lang', choices=['en', 'de', 'both'], default=None,
                         help="Restrict to 'en', 'de' (default: auto by filename)")
+    parser.add_argument('--min-score', type=float, default=0.0,
+                        help='Only source rows whose score is >= this. Default: 0.0')
     parser.add_argument('--max-score', type=float, default=3.0,
                         help='Only source rows whose score (min ModAvg/HeadAvg for NN, Avg for PV) is <= this. Default: 3.0')
+    parser.add_argument('--max-sim', type=float, default=0.85,
+                        help='Maximum allowed lexical Jaccard similarity between generated variants (default: 0.85 to filter near-duplicates)')
     parser.add_argument('--limit', type=int, default=None,
                         help='Maximum number of low-score source rows to process')
     parser.add_argument('--batch-size', type=int, default=1,
@@ -329,7 +334,7 @@ def read_source_rows(paths: List[str]) -> List[Dict[str, Any]]:
                         continue
                     base_score = min(finite)
 
-                    if base_score > ARGS.max_score:
+                    if base_score > ARGS.max_score or base_score < ARGS.min_score:
                         continue
 
                     def col(name: str) -> str:
@@ -404,6 +409,15 @@ def _clean_variant(raw: str, row: Dict[str, Any]) -> Optional[str]:
     return v
 
 
+def _word_jaccard(s1: str, s2: str) -> float:
+    """Computes lexical token Jaccard similarity between two sentences."""
+    w1 = set(re.findall(r'\w+', s1.lower()))
+    w2 = set(re.findall(r'\w+', s2.lower()))
+    if not w1 or not w2:
+        return 0.0
+    return len(w1 & w2) / len(w1 | w2)
+
+
 def clean_and_validate_single_variants(raw_text: str, row: Dict[str, Any]) -> List[str]:
     if not raw_text:
         return []
@@ -441,8 +455,12 @@ def clean_and_validate_single_variants(raw_text: str, row: Dict[str, Any]) -> Li
     valid: List[str] = []
     for item in candidate_list:
         v = _clean_variant(item, row)
-        if v and v not in valid:
-            valid.append(v)
+        if not v:
+            continue
+        # Lexical diversity check: reject near-identical variants
+        if any(_word_jaccard(v, existing) > ARGS.max_sim for existing in valid):
+            continue
+        valid.append(v)
     return valid
 
 
@@ -478,8 +496,11 @@ def clean_and_validate_batch_results(raw_text: str, batch: List[Dict[str, Any]])
                 clean_v: List[str] = []
                 for v in v_list:
                     vv = _clean_variant(re.sub(r'[\t\r\n]+', ' ', str(v)), row)
-                    if vv and vv not in clean_v:
-                        clean_v.append(vv)
+                    if not vv:
+                        continue
+                    if any(_word_jaccard(vv, existing) > ARGS.max_sim for existing in clean_v):
+                        continue
+                    clean_v.append(vv)
                 if clean_v:
                     results_map[item_id] = clean_v
     except Exception:
