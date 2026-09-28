@@ -54,7 +54,6 @@ class Trainer:
         active_targets = self.cfg.targets
         if active_targets:
             train_rows = expand_targets(train_rows, active_targets)
-            val_rows = expand_targets(val_rows, active_targets)
 
         train_ds = CompDataset(train_rows, tokenizer, max_len=self.cfg.max_context_length)
         val_ds = CompDataset(val_rows, tokenizer, max_len=self.cfg.max_context_length)

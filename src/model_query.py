@@ -167,7 +167,7 @@ class TargetAwareCrossAttention(nn.Module):
             z_attn, attn_weights = self.mha(
                 query=q_in,
                 key=kv_in,
-                value=h_final,
+                value=kv_in,
                 key_padding_mask=key_padding_mask,
                 need_weights=True,
                 average_attn_weights=True,  # [B, 3, S]
@@ -227,7 +227,7 @@ class ComponentInteractionLayer(nn.Module):
             z_self, self_attn_weights = self.self_mha(
                 query=z_in,
                 key=z_in,
-                value=z,
+                value=z_in,
                 need_weights=True,
                 average_attn_weights=True,
             )
