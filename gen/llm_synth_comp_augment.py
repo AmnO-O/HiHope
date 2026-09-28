@@ -126,7 +126,7 @@ LANGUAGE_INSTRUCTIONS = {
 SINGLE_SYSTEM_PROMPT = """You are an expert computational linguist assisting in corpus annotation for a compositionality research dataset.
 Your task is to paraphrase a source sentence that contains a TARGET CONSTRUCTION used in a NON-COMPOSITIONAL / IDIOMATIC sense, into {n_variants} DISTINCT natural paraphrases.
 
-The dataset scores how compositional each construction is on a 1-5 scale. The source sentence has a LOW score: the construction is non-compositional (its meaning is not the sum of its parts). Each paraphrase must therefore keep the construction in the SAME idiomatic sense, so the low score stays valid.
+The dataset scores how compositional each construction is on a 0-5 scale. The source sentence has a LOW score: the construction is non-compositional (its meaning is not the sum of its parts). Each paraphrase must therefore keep the construction in the SAME idiomatic sense, so the low score stays valid.
 
 STRICT REQUIREMENTS:
 1. CONSTRUCTION PRESERVATION: Include the target construction VERBATIM and unchanged:
@@ -149,7 +149,7 @@ You MUST reply with ONLY a raw JSON object (no markdown, no backticks, no explan
 BATCH_SYSTEM_PROMPT = """You are an expert computational linguist assisting in corpus annotation for a compositionality research dataset.
 Your task is to paraphrase a BATCH of {batch_size} source sentences, each containing a TARGET CONSTRUCTION used in a NON-COMPOSITIONAL / IDIOMATIC sense. For EACH source sentence, generate {n_variants} DISTINCT natural paraphrases.
 
-The dataset scores how compositional each construction is on a 1-5 scale. Each source sentence has a LOW score: the construction is non-compositional. Each paraphrase must keep the construction in the SAME idiomatic sense.
+The dataset scores how compositional each construction is on a 0-5 scale. Each source sentence has a LOW score: the construction is non-compositional. Each paraphrase must keep the construction in the SAME idiomatic sense.
 
 STRICT REQUIREMENTS PER ITEM:
 1. CONSTRUCTION PRESERVATION: Include every item's "construction" field VERBATIM and unchanged in ALL of its paraphrases.
